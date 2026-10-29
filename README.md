@@ -1,5 +1,7 @@
 # JobAtlas
 
+[![tests](https://github.com/nathaniasSC2/JobAtlas/actions/workflows/tests.yml/badge.svg)](https://github.com/nathaniasSC2/JobAtlas/actions/workflows/tests.yml)
+
 Finds jobs posted **directly on employers' own hiring systems** (the Greenhouse,
 Lever, Ashby or Workday board a company runs itself, a university's PageUp feed,
 a city's job RSS), scores each one against a profile, and serves the matches as
