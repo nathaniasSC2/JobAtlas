@@ -42,7 +42,7 @@ class TestRecorded(unittest.TestCase):
         self.assertTrue(j["url"].startswith("https://jobs.lever.co/truv/"))
         self.assertGreater(len(j["description"]), 200)
         self.assertFalse(j["needs_detail"])
-        self.assertTrue(any(x["pay_text"] for x in r.jobs) or True)
+        self.assertEqual(j["pay_text"], "$25.00 - $45.00/hr")  # from salaryRange
 
     def test_lever_eu_token(self):
         self.assertEqual(adapters.get("lever").public_url("eu:acme"), "https://jobs.eu.lever.co/acme")
