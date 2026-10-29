@@ -16,6 +16,11 @@ CACHE = os.path.join(DATA, "cache")
 CONFIG_FILE = os.environ.get("JOBATLAS_CONFIG", os.path.join(DATA, "config.json"))
 # Who you are and what you want: fields, location, pay, hard rules (see examples/profile.example.json).
 PROFILE_FILE = os.environ.get("JOBATLAS_PROFILE", os.path.join(DATA, "profile.json"))
+# examples/: inside the package when pip-installed, beside it in a checkout.
+_PKG = os.path.dirname(os.path.abspath(__file__))
+EXAMPLES = os.path.join(_PKG, "examples")
+if not os.path.isdir(EXAMPLES):
+    EXAMPLES = os.path.join(os.path.dirname(_PKG), "examples")
 
 UA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 JobAtlas/0.1"
 ROBOTS_TOKEN = "JobAtlas"

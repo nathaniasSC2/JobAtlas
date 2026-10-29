@@ -12,8 +12,7 @@ import re
 
 from . import config
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-EXAMPLE = os.path.join(os.path.dirname(HERE), "examples", "profile.example.json")
+EXAMPLE = os.path.join(config.EXAMPLES, "profile.example.json")
 
 RULE_VALUES = ("skip", "flag", "ignore")
 DEFAULT_RULES = {
