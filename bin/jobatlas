@@ -1,5 +1,11 @@
 #!/bin/sh
 # jobatlas CLI wrapper: runs the package from wherever this checkout lives
-# (a clone, or a copy deployed under /opt/jobatlas).
+# (a clone, or a copy deployed under /opt/jobatlas). A system install can set
+# JOBATLAS_DATA (and JOBATLAS_CONFIG/JOBATLAS_PROFILE) in /etc/default/jobatlas.
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+if [ -z "$JOBATLAS_DATA" ] && [ -r /etc/default/jobatlas ]; then
+  set -a
+  . /etc/default/jobatlas
+  set +a
+fi
 exec env PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 -m jobatlas "$@"
