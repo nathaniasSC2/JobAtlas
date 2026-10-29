@@ -256,7 +256,7 @@ def main(argv=None):
     s.add_argument("--hours", type=int, default=72)
     s.add_argument("--fresh-days", type=int)
     s.add_argument("--min-tier", default="fair")
-    s.add_argument("--exclude-seen", action="store_true")
+    s.add_argument("--exclude-seen", "--exclude-shown", action="store_true", help="drop jobs in the ledger")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_top)
     s = sub.add_parser("serve")
