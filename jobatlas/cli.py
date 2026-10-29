@@ -7,6 +7,7 @@
   jobatlas poll [--all] [--limit N] [--ats greenhouse,lever] [--detail-budget N]
   jobatlas rescore                                                re-run the filter on open jobs
   jobatlas status [--json]
+  jobatlas profile check [--file F]                               validate profile.json
   jobatlas export                                                 rewrite export/latest.json
   jobatlas top [--n 20] [--hours 72] [--fresh-days N] [--exclude-seen] [--json]
   jobatlas serve [--port 8804]
@@ -21,7 +22,7 @@ import os
 import sys
 import threading
 
-from . import config, db
+from . import config, db, profile
 
 
 def setup_logging(name="jobatlas", quiet=False):
@@ -176,6 +177,18 @@ def cmd_status(a):
     print(json.dumps(s, indent=1) if a.json else status.render(s))
 
 
+def cmd_profile_check(a):
+    path = a.file or config.PROFILE_FILE
+    if not os.path.exists(path):
+        sys.exit("no profile at %s (the example is used): run `jobatlas init`" % path)
+    problems = profile.check_file(path)
+    for p in problems:
+        print("  " + p)
+    print("%s: %s" % (path, "%d problem(s)" % len(problems) if problems else "ok"))
+    if problems:
+        sys.exit(1)
+
+
 def cmd_export(a):
     from . import export
     print(json.dumps(export.write(db.connect())))
@@ -245,6 +258,10 @@ def main(argv=None):
     s = sub.add_parser("status")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("profile", help="profile tools")
+    c = s.add_subparsers(dest="profile_cmd", required=True).add_parser("check", help="validate profile.json")
+    c.add_argument("--file", help="default: <data>/profile.json")
+    c.set_defaults(fn=cmd_profile_check)
     s = sub.add_parser("export")
     s.set_defaults(fn=cmd_export)
     s = sub.add_parser("top")
@@ -265,7 +282,14 @@ def main(argv=None):
     s.add_argument("--text-file")
     s.set_defaults(fn=cmd_check)
     a = p.parse_args(argv)
-    setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("init", "status", "top", "check", "export"))
+    setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("init", "status", "profile", "top", "check", "export"))
+    try:
+        dispatch(a)
+    except profile.ProfileError as e:
+        sys.exit(str(e))
+
+
+def dispatch(a):
     if a.cmd in ("poll", "discover-batch", "details"):
         from .runlock import Busy, RunLock
         try:

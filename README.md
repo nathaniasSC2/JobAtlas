@@ -48,7 +48,7 @@ The code reads the posting itself: the pay range in free text, years asked vs.
 preferred, degree wording, remote/hybrid/on-site *as written* (not just the tag),
 state hiring lists, weekend shifts, quota pay. What you want lives in a JSON
 profile ([example](examples/profile.example.json)), and each hard rule can be
-`skip`, `flag` or `ignore`.
+`skip`, `flag` or `ignore`. `jobatlas profile check` catches typos in it.
 
 Every result says why:
 

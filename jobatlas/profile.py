@@ -135,6 +135,10 @@ class Profile:
         return self.rules.get(name, "skip")
 
 
+class ProfileError(ValueError):
+    """The profile file parses but can't be used (a bad regex or value)."""
+
+
 _P = None
 
 
@@ -150,7 +154,83 @@ def load(force=False, path=None):
             break
         except (OSError, ValueError):
             continue
-    prof = Profile(d or {}, src)
+    try:
+        prof = Profile(d or {}, src)
+    except (re.error, TypeError, ValueError, AttributeError) as e:
+        raise ProfileError("can't load profile %s: %s (run `jobatlas profile check`)" % (src, e)) from e
     if path is None:
         _P = prof
     return prof
+
+
+KEYS = {"fields", "search_terms", "location", "pay", "rules", "engineering_ok", "exclude_titles", "quota_fields",
+        "stretch_titles", "industry_skip", "employer_bonus", "blocked_employers", "keywords", "leadership"}
+FIELD_KEYS = {"label", "titles", "exclude", "exclude_unless", "credible_years", "bonus"}
+NUMBERS = {"location": {"local_bonus", "home_state_remote_bonus"}, "pay": {"minimum_year", "minimum_hour", "floor_year", "floor_hour"},
+           "leadership": {"stretch_min_years", "senior_stretch_below_years"}}
+LOCATION_KEYS = {"home_state", "local", "nearby", "remote"} | NUMBERS["location"]
+
+
+def check(d):
+    """Mistakes in a profile dict that loading would silently ignore or crash on. [] means it's fine."""
+    out = []
+    if not isinstance(d, dict):
+        return ["the profile must be a JSON object"]
+
+    def unknown(obj, allowed, where):
+        out.extend("%s: unknown key %r" % (where, k) for k in obj if not k.startswith("_") and k not in allowed)
+
+    def regex(x, where):
+        try:
+            _rx(x)
+        except (re.error, TypeError) as e:
+            out.append("%s: bad regex (%s)" % (where, e))
+
+    unknown(d, KEYS, "profile")
+    fields = {k: v for k, v in (d.get("fields") or {}).items() if not k.startswith("_")}
+    if not fields:
+        out.append("fields: none defined, so every title is outside the profile")
+    for name, f in fields.items():
+        unknown(f, FIELD_KEYS, "fields." + name)
+        if not f.get("titles"):
+            out.append("fields.%s: no titles pattern" % name)
+        for k in ("titles", "exclude", "exclude_unless"):
+            regex(f.get(k), "fields.%s.%s" % (name, k))
+    unknown(d.get("location") or {}, LOCATION_KEYS, "location")
+    st = (d.get("location") or {}).get("home_state") or ""
+    if st and st.upper() not in US_STATES:
+        out.append("location.home_state: %r is not a US state code" % st)
+    for sect, keys in NUMBERS.items():
+        if sect != "location":
+            unknown(d.get(sect) or {}, keys, sect)
+        out.extend("%s.%s: %r is not a number" % (sect, k, v) for k, v in (d.get(sect) or {}).items()
+                   if k in keys and (isinstance(v, bool) or not isinstance(v, (int, float))))
+    for k, v in (d.get("rules") or {}).items():
+        if k.startswith("_"):
+            continue
+        if k not in DEFAULT_RULES:
+            out.append("rules: unknown rule %r (known: %s)" % (k, ", ".join(DEFAULT_RULES)))
+        elif v not in RULE_VALUES:
+            out.append("rules.%s: %r should be skip, flag or ignore" % (k, v))
+    for k in ("engineering_ok", "exclude_titles"):
+        regex(d.get(k), k)
+    regex((d.get("industry_skip") or {}).get("regex"), "industry_skip.regex")
+    for key, rk in (("stretch_titles", "titles"), ("employer_bonus", "regex"), ("blocked_employers", "regex")):
+        for i, e in enumerate(d.get(key) or []):
+            regex(e.get(rk), "%s[%d].%s" % (key, i, rk))
+    refs = [("quota_fields", d.get("quota_fields")), ("industry_skip.fields", (d.get("industry_skip") or {}).get("fields"))]
+    refs += [("employer_bonus[%d].fields" % i, e.get("fields")) for i, e in enumerate(d.get("employer_bonus") or [])]
+    for where, names in refs:
+        out.extend("%s: no field named %r" % (where, n) for n in names or [] if n not in fields)
+    return out
+
+
+def check_file(path):
+    try:
+        with open(path, encoding="utf8") as f:
+            d = json.load(f)
+    except OSError as e:
+        return ["can't read %s (%s)" % (path, e.strerror)]
+    except ValueError as e:
+        return ["not valid JSON (%s)" % e]
+    return check(d)
