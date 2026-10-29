@@ -1,0 +1,17 @@
+{
+ "_about": "Overrides for jobatlas/config.py DEFAULTS. Copy to <data>/config.json and keep only what you change.",
+ "poll": {"interval_hours": 3.0, "workers": 12},
+ "export": {"hours": 72, "min_tier": "fair"},
+ "api": {"host": "127.0.0.1", "port": 8804},
+ "ledger": {"path": ""},
+ "alerts": {
+  "enabled": false,
+  "channel": "discord_webhook",
+  "env_file": "/etc/jobatlas/alerts.env",
+  "min_score": 92,
+  "daily_cap": 6,
+  "quiet_start": 22,
+  "quiet_end": 8,
+  "tz": "America/New_York"
+ }
+}

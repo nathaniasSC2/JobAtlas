@@ -1,0 +1,20 @@
+[Unit]
+# Fetches every DUE board (normal boards every 3 h, boards that posted >= 5 new
+# jobs in the last week every hour), stores the jobs, detects new and closed
+# postings, scores them and rewrites <data>/export/latest.json.
+Description=JobAtlas poll (employer ATS boards -> scored jobs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jobatlas
+Environment=JOBATLAS_DATA=/var/lib/jobatlas
+WorkingDirectory=/opt/jobatlas
+ExecStart=/opt/jobatlas/bin/jobatlas poll
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+ProtectSystem=full

@@ -1,0 +1,18 @@
+[Unit]
+# Re-reads the seed sources, then probes the next batch of queued company names
+# for ATS boards (careers pages + validated slug guesses).
+Description=JobAtlas discovery (company names -> ATS boards)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jobatlas
+Environment=JOBATLAS_DATA=/var/lib/jobatlas
+WorkingDirectory=/opt/jobatlas
+ExecStartPre=/opt/jobatlas/bin/jobatlas seed --sources remoteintech,employers
+ExecStart=/opt/jobatlas/bin/jobatlas discover-batch --budget 800 --workers 8
+TimeoutStartSec=3h
+Nice=15
+NoNewPrivileges=true
+ProtectSystem=full

@@ -1,0 +1,87 @@
+{
+ "_about": "An example job seeker: support / IT / implementation / community roles, remote anywhere in the US or on-site in Asheville, NC; doesn't drive. Copy to <data>/profile.json and make it yours. Title patterns are regexes matched against the lower-cased title; the first field that matches wins, so put specific fields first.",
+
+ "fields": {
+  "community": {
+   "label": "Community & creator programs",
+   "titles": "community|esport|player (?:support|experience)|creator|streamer|trust|safety|moderat|live op|social media|fan (?:engagement|experience)",
+   "credible_years": 6,
+   "bonus": 4
+  },
+  "automation_ai": {
+   "label": "Automation & AI operations",
+   "titles": "automation|\\bai\\b|artificial intelligence|\\bllm|\\bagents? (?:ops|operations|specialist|trainer)|no-code|low-code|workflow|business systems|internal tools|prompt",
+   "credible_years": 2,
+   "bonus": 5
+  },
+  "implementation": {
+   "label": "Software implementation & onboarding",
+   "titles": "implementation|onboarding|deployment specialist|integration specialist|solutions? (?:consultant|specialist)",
+   "credible_years": 3,
+   "bonus": 5
+  },
+  "it_support": {
+   "label": "IT support & administration",
+   "titles": "\\bit\\b|i\\.t\\.|information technology|help ?desk|service desk|desktop|system(?:s)? admin|sysadmin|network admin|\\bnoc\\b|technician|endpoint|computer support|\\bmsp\\b",
+   "exclude": "\\b(field|inventory|warehouse|logistics|install(?:ation|er)?|cna|patient care|nursing|medical|surgical|lab(?:oratory)?|pharmacy|veterinary|dental|maintenance|facilities|hvac|electrical|mechanical|automotive|aviation|solar|cable|fiber|utility|water|manufacturing|quality|research|food|museum|library|theat(?:er|re)|lighting)\\b[\\w ,/&-]{0,25}\\btechnicians?\\b",
+   "exclude_unless": "\\b(it|computer|desktop|help ?desk|service desk|network|systems)\\b",
+   "credible_years": 4,
+   "bonus": 5
+  },
+  "tech_support": {
+   "label": "Technical support",
+   "titles": "support|escalation|technical engagement|customer (?:service|care|specialist)|client services|product specialist|application specialist|technical specialist",
+   "credible_years": 5,
+   "bonus": 5
+  }
+ },
+
+ "search_terms": ["support", "help desk", "IT", "systems administrator", "implementation", "onboarding", "community", "automation", "remote"],
+
+ "location": {
+  "home_state": "NC",
+  "local": ["Asheville"],
+  "nearby": ["Black Mountain", "Weaverville", "Hendersonville", "Fletcher", "Arden"],
+  "remote": true,
+  "local_bonus": 8,
+  "home_state_remote_bonus": 15
+ },
+
+ "pay": {"minimum_year": 40000, "minimum_hour": 19.25, "floor_year": 45000, "floor_hour": 22.0},
+
+ "rules": {
+  "weekend_required": "skip",
+  "drivers_licence": "skip",
+  "clearance": "skip",
+  "degree_required": "skip",
+  "no_benefits": "skip",
+  "quota": "skip",
+  "engineering_titles": "skip",
+  "internships": "skip"
+ },
+
+ "engineering_ok": "(support|implementation|onboarding|customer|customer success|integration|\\bit\\b|desktop|help ?desk|ai operations|automation operations|technical engagement|escalation|service desk|deployment)\\s*(?:engineer|eng\\b)",
+
+ "exclude_titles": "\\b(product manager|product owner|program manager|project manager|data scientist|data analyst|attorney|counsel|recruiter|recruiting|talent acquisition|sourcer|accountant|controller|nurse|teacher|faculty|professor|devops|sre|site reliability|security engineer|underwriter|claims adjuster|designer|architect|corrections? officer|custodi\\w*|janitor\\w*)\\b",
+
+ "quota_fields": ["implementation"],
+
+ "stretch_titles": [
+  {"titles": "\\b(video (?:producer|editor|production)|videograph\\w*|motion graphics|post-production)", "reason": "video production title: no editing portfolio"}
+ ],
+
+ "industry_skip": {
+  "_about": "Implementation roles only at software companies: a bank's or a hospital's 'implementation specialist' is a different job.",
+  "fields": ["implementation"],
+  "regex": "\\b(bank|bancorp|credit union|mortgage|lending|loans?|insurance|hospital|clinic|pharma\\w*|staffing|freight|trucking|real estate|property management)\\b"
+ },
+
+ "employer_bonus": [
+  {"regex": "\\b(game|games|gaming|esports?|twitch|streaming|creator)\\b", "fields": ["community"], "points": 3, "reason": "games/streaming employer"}
+ ],
+
+ "keywords": ["Linux", "Ubuntu", "Docker", "Tailscale", "Google Workspace", "Okta", "Jamf", "Zendesk", "Jira", "n8n", "Zapier",
+              "Python", "Bash", "PowerShell", "Discord", "OBS", "LLM", "AI agent", "knowledge base", "SOP", "help desk"],
+
+ "leadership": {"stretch_min_years": 6, "senior_stretch_below_years": 5}
+}

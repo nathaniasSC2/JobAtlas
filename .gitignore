@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Live data never lives in the repo (it is in $JOBATLAS_DATA)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+/data/
+/logs/
+/export/
+*.log
+
+# Local config and secrets
+.env
+*.env
+config.local.json
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

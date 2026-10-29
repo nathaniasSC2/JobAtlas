@@ -1,0 +1,21 @@
+[Unit]
+# Read-only JSON API: /latest.json /jobs/<id> /status /health /discover?company=&title=
+# It has no auth: keep it on 127.0.0.1 (default) or a private interface.
+Description=JobAtlas API (:8804, localhost)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobatlas
+Environment=JOBATLAS_DATA=/var/lib/jobatlas
+WorkingDirectory=/opt/jobatlas
+ExecStart=/opt/jobatlas/bin/jobatlas serve --port 8804
+Restart=always
+RestartSec=5
+Nice=5
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

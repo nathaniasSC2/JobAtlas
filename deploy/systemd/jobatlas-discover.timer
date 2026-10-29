@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly: JobAtlas discovers more employer ATS boards
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+Unit=jobatlas-discover.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+{
+ "_about": "Employers to watch. With boards: polled as given (ats + token, see the README's adapter table). Without: queued for discovery, which looks for the board on the website (or guesses slugs and keeps only boards that prove they belong to the company). Copy to <data>/employers.json, then run: jobatlas seed --sources employers",
+ "employers": [
+  {"company": "Tailscale", "boards": [{"ats": "greenhouse", "token": "tailscale"}]},
+  {"company": "n8n", "boards": [{"ats": "ashby", "token": "n8n"}]},
+  {"company": "Nerdio", "boards": [{"ats": "rippling", "token": "nerdio-careers"}]},
+  {"company": "Some Local Credit Union", "website": "https://www.example.org", "note": "no ATS known yet: discovery resolves it"}
+ ]
+}

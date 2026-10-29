@@ -1,0 +1,6 @@
+{
+ "_about": "Optional extra Workday CXS queries per board token (tenant|wdN|site), run before the search_terms searches. Each query pages up to 5x20 results. Facet ids come from the board's own /jobs response (facets[].values[].id).",
+ "_example|wd5|Careers": [
+  {"name": "remote", "appliedFacets": {"remoteType": ["<facet id>"]}}
+ ]
+}

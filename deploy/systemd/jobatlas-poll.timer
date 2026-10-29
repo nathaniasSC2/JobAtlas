@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly: JobAtlas polls the boards that are due (each board has its own 1-3 h interval)
+
+[Timer]
+OnCalendar=*-*-* *:07:00
+RandomizedDelaySec=120
+Persistent=true
+Unit=jobatlas-poll.service
+
+[Install]
+WantedBy=timers.target

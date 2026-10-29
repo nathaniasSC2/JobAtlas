@@ -1,0 +1,5 @@
+#!/bin/sh
+# jobatlas CLI wrapper: runs the package from wherever this checkout lives
+# (a clone, or a copy deployed under /opt/jobatlas).
+HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec env PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 -m jobatlas "$@"
