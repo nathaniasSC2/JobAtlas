@@ -25,7 +25,7 @@ import urllib.request
 import uuid
 from zoneinfo import ZoneInfo
 
-from . import config, db
+from . import __version__, config, db
 
 log = logging.getLogger("jobatlas.alerts")
 
@@ -62,7 +62,7 @@ def discord_text(message):
     return URL_RE.sub(r"<\1>", message)[:2000]
 
 
-UA = "DiscordBot (https://github.com/nathaniasSC2, 1.0)"
+UA = "DiscordBot (https://github.com/nathaniasSC2/JobAtlas, %s)" % __version__
 
 
 def _post(url, payload, headers=None):
@@ -133,6 +133,11 @@ def in_quiet_hours(now_local, start_h, end_h):
     return (start_h <= h or h < end_h) if start_h > end_h else (start_h <= h < end_h)
 
 
+def local_now(tz_name=""):
+    """Now in alerts.tz (an IANA name), or in the server's local time when it is empty."""
+    return dt.datetime.now(ZoneInfo(tz_name)) if tz_name else dt.datetime.now().astimezone()
+
+
 def title_ok(title, pattern):
     return not (pattern and re.search(pattern, title or "", re.I))
 
@@ -153,15 +158,14 @@ def process(conn, run_started):
     Policy:
       * only score >= alerts.min_score and titles not matching alerts.skip_titles
         (leadership/senior stretches stay in the export, not on your phone);
-      * quiet hours alerts.quiet_start..quiet_end (America/Los_Angeles): nothing is sent or
-        recorded, so overnight finds go out on the first run after quiet hours end;
+      * quiet hours alerts.quiet_start..quiet_end in alerts.tz: nothing is sent or recorded,
+        so overnight finds go out on the first run after quiet hours end;
       * at most alerts.daily_cap texted jobs per local day, highest scores first, and up to
         alerts.max_per_run jobs batched into ONE text per run.
     With alerts.enabled false, candidates are only recorded (mode "disabled").
     """
     cfg = config.cfg()["alerts"]
-    tz = ZoneInfo(cfg.get("tz", "America/Los_Angeles"))
-    now_local = dt.datetime.now(tz)
+    now_local = local_now(cfg.get("tz") or "")
     min_rank = {"strong": 0, "good": 1, "fair": 2}.get(cfg.get("min_tier", "strong"), 0)
     tiers = [t for t, i in (("strong", 0), ("good", 1), ("fair", 2)) if i <= min_rank]
     since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=int(cfg.get("lookback_hours", 24)))).isoformat(timespec="seconds")

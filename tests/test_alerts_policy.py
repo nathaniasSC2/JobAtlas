@@ -14,6 +14,10 @@ class AlertPolicyTest(unittest.TestCase):
         self.assertTrue(alerts.in_quiet_hours(dt.datetime(2026, 10, 26, 13), 12, 14))
         self.assertFalse(alerts.in_quiet_hours(dt.datetime(2026, 10, 26, 14), 12, 14))
 
+    def test_local_now(self):
+        self.assertEqual(alerts.local_now("America/New_York").tzinfo.key, "America/New_York")
+        self.assertIsNotNone(alerts.local_now("").utcoffset())
+
     def test_title_filter(self):
         p = alerts.DEFAULT_SKIP_TITLES
         for bad in ["Head of Trust & Safety", "Senior Support Engineer", "Sr. Implementation Specialist",

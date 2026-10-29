@@ -70,7 +70,7 @@ DEFAULTS = {
         "daily_cap": 6,
         "quiet_start": 22,
         "quiet_end": 8,
-        "tz": "America/Los_Angeles",
+        "tz": "",                       # IANA name for quiet hours and the daily cap; empty = server local time
         "channel": "discord_webhook",   # discord_webhook | discord_dm | imessage
         # Secrets are read at send time from this env file, never stored in config.json:
         #   JOBATLAS_DISCORD_WEBHOOK                       (discord_webhook)
