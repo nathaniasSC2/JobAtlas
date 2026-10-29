@@ -5,6 +5,7 @@
   jobatlas discover "Company" ["Title"] [--website URL] [--json]   resolve one company to its boards
   jobatlas discover-batch [--budget N] [--workers N]              probe queued candidates
   jobatlas poll [--all] [--limit N] [--ats greenhouse,lever] [--detail-budget N]
+  jobatlas watch                                                  poll continuously; alerts within minutes
   jobatlas rescore                                                re-run the filter on open jobs
   jobatlas status [--json]
   jobatlas profile check [--file F]                               validate profile.json
@@ -14,7 +15,6 @@
   jobatlas check "title" [--location L] [--text-file F]           score an ad-hoc posting (debug)
 """
 import argparse
-import concurrent.futures as cf
 import json
 import logging
 import logging.handlers
@@ -91,47 +91,8 @@ def cmd_discover(a):
 def cmd_discover_batch(a):
     from . import discover
     from .net import Client
-    log = logging.getLogger("jobatlas.discover")
-    cfg = config.cfg()
-    conn = db.connect()
-    budget = a.budget or cfg["discover"]["budget"]
-    rows = conn.execute("SELECT * FROM candidates WHERE probed_at IS NULL ORDER BY priority, first_seen LIMIT ?", (budget,)).fetchall()
-    client = Client(cfg, log=log.info)
-    local = threading.local()
-    found = {"companies": 0, "boards": 0, "by_ats": {}, "blocked": 0, "none": 0}
-    lock = threading.Lock()
-
-    def one(r):
-        if not hasattr(local, "conn"):
-            local.conn = db.connect()
-        try:
-            srcs = db.jload(r["sources"], ["?"]) or ["?"]
-            out = discover.discover(local.conn, client, r["company"], website=r["website"] or "", source="batch:" + srcs[0],
-                                    sources=",".join(srcs))
-        except Exception as e:  # noqa: BLE001
-            log.warning("discover %s failed: %s", r["company"], e)
-            return
-        with lock:
-            if out["boards"]:
-                found["companies"] += 1
-                for b in out["boards"]:
-                    if b["new"]:
-                        found["boards"] += 1
-                        found["by_ats"][b["ats"]] = found["by_ats"].get(b["ats"], 0) + 1
-            elif out["blocked"] or out["walled"]:
-                found["blocked"] += 1
-            else:
-                found["none"] += 1
-    log.info("discover-batch: %d candidates", len(rows))
-    with cf.ThreadPoolExecutor(max_workers=a.workers) as ex:
-        list(ex.map(one, rows))
-    found["probed"] = len(rows)
-    found["http"] = client.stats
-    conn.execute("INSERT INTO runs(kind, started, finished, boards, notes) VALUES ('discover', ?, ?, ?, ?)",
-                 (db.now(), db.now(), found["boards"], db.jdump(found)))
-    conn.commit()
-    log.info("discover-batch done: %s", found)
-    print(json.dumps(found, indent=1))
+    client = Client(config.cfg(), log=logging.getLogger("jobatlas.discover").info)
+    print(json.dumps(discover.batch(client, a.budget, a.workers), indent=1))
 
 
 def cmd_poll(a):
@@ -139,6 +100,17 @@ def cmd_poll(a):
     st = poll.run(limit=a.limit, ats=a.ats.split(",") if a.ats else None, all_boards=a.all, workers=a.workers,
                   detail_budget=a.detail_budget)
     print(json.dumps(st, indent=1, default=str))
+
+
+def cmd_watch(a):
+    import signal
+    from . import watch
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    try:
+        watch.run(stop)
+    except KeyboardInterrupt:
+        pass
 
 
 def cmd_details(a):
@@ -248,6 +220,8 @@ def main(argv=None):
     s.add_argument("--workers", type=int)
     s.add_argument("--detail-budget", type=int)
     s.set_defaults(fn=cmd_poll)
+    s = sub.add_parser("watch", help="poll continuously and alert within minutes (run as a service)")
+    s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("details", help="fetch missing job details, rescore, verify match pages")
     s.add_argument("--budget", type=int, default=3000)
     s.add_argument("--workers", type=int, default=12)
@@ -290,11 +264,11 @@ def main(argv=None):
 
 
 def dispatch(a):
-    if a.cmd in ("poll", "discover-batch", "details"):
+    if a.cmd in ("poll", "discover-batch", "details", "watch"):
         from .runlock import Busy, RunLock
         try:
             # a poll that finds another job running just skips (the next hourly run catches up);
-            # discovery and details wait up to an hour for the poll to finish
+            # the rest wait up to an hour. A running `watch` holds the lock for good.
             with RunLock(wait=0 if a.cmd == "poll" else 3600):
                 a.fn(a)
         except Busy as e:

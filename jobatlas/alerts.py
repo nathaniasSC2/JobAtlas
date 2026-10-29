@@ -44,13 +44,23 @@ def _env(path):
     return out
 
 
+def secrets(cfg):
+    """alerts.env_file as a dict, plus alerts.env_keys renames (our name -> the name used in that file)."""
+    env = _env(cfg.get("env_file") or "")
+    for ours, theirs in (cfg.get("env_keys") or {}).items():
+        if theirs in env:
+            env[ours] = env[theirs]
+    return env
+
+
 def text_for(r):
     facts = db.jload(r["facts"], {}) or {}
     pay = ""
     if facts.get("pay_top"):
         pay = (" $%dk" % round(facts["pay_top"] / 1000)) if facts.get("pay_kind") == "year" else (" $%.0f/hr" % facts["pay_top"])
+    where = (" (%s)" % r["location"][:60]) if r["location"] else ""
     why = (db.jload(r["reasons"], []) or [""])[0]
-    return ("JobAtlas Strong (%d): %s at %s%s. %s\n%s" % (r["score"], r["title"], r["company"], pay, why, r["url"]))[:600]
+    return ("JobAtlas Strong (%d): %s at %s%s%s. %s\n%s" % (r["score"], r["title"], r["company"], where, pay, why, r["url"]))[:600]
 
 
 DISCORD_API = "https://discord.com/api/v10"
@@ -73,7 +83,7 @@ def _post(url, payload, headers=None):
 
 
 def send_discord_dm(message, cfg):
-    env = _env(cfg.get("env_file") or "")
+    env = secrets(cfg)
     token = env.get("JOBATLAS_DISCORD_TOKEN", "")
     user = str(cfg.get("discord_user_id") or env.get("JOBATLAS_DISCORD_USER", "")).split(",")[0].strip()
     if not (token and user):
@@ -88,7 +98,7 @@ def send_discord_dm(message, cfg):
 
 
 def send_discord_webhook(message, cfg):
-    hook = _env(cfg.get("env_file") or "").get("JOBATLAS_DISCORD_WEBHOOK", "")
+    hook = secrets(cfg).get("JOBATLAS_DISCORD_WEBHOOK", "")
     if not hook.startswith("https://"):
         return False, "missing JOBATLAS_DISCORD_WEBHOOK (alerts.env_file)"
     try:
@@ -108,7 +118,7 @@ def send(message, cfg):
 
 
 def send_imessage(message, cfg):
-    env = _env(cfg.get("env_file") or "")
+    env = secrets(cfg)
     # alerts.server_url (config.json) overrides the env file's URL; the password still comes from the env file.
     server = (cfg.get("server_url") or env.get("BLUEBUBBLES_SERVER_URL", "")).rstrip("/")
     pw, guid = env.get("BLUEBUBBLES_PASSWORD", ""), cfg.get("chat_guid") or ""
@@ -155,25 +165,28 @@ def batch_text(rows):
 def process(conn, run_started):
     """Message about Strong jobs first seen in the last day (not already alerted or in the ledger).
 
-    Policy:
-      * only score >= alerts.min_score and titles not matching alerts.skip_titles
-        (leadership/senior stretches stay in the export, not on your phone);
+    Called right after each poll cycle scores its new jobs. Policy (all optional):
+      * only score >= alerts.min_score and titles not matching alerts.skip_titles;
       * quiet hours alerts.quiet_start..quiet_end in alerts.tz: nothing is sent or recorded,
         so overnight finds go out on the first run after quiet hours end;
-      * at most alerts.daily_cap texted jobs per local day, highest scores first, and up to
-        alerts.max_per_run jobs batched into ONE text per run.
-    With alerts.enabled false, candidates are only recorded (mode "disabled").
+      * at most alerts.daily_cap sent jobs per local day (0 = no cap), highest scores first,
+        and up to alerts.max_per_run jobs bundled into one message.
+    A failed send is retried after 5 minutes. With alerts.enabled false, candidates are
+    only recorded (mode "disabled").
     """
     cfg = config.cfg()["alerts"]
     now_local = local_now(cfg.get("tz") or "")
     min_rank = {"strong": 0, "good": 1, "fair": 2}.get(cfg.get("min_tier", "strong"), 0)
     tiers = [t for t, i in (("strong", 0), ("good", 1), ("fair", 2)) if i <= min_rank]
-    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=int(cfg.get("lookback_hours", 24)))).isoformat(timespec="seconds")
+    utc = dt.datetime.now(dt.timezone.utc)
+    since = (utc - dt.timedelta(hours=int(cfg.get("lookback_hours", 24)))).isoformat(timespec="seconds")
+    retry = (utc - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
     rows = conn.execute(
         "SELECT * FROM jobs WHERE first_seen>=? AND tier IN (%s) AND closed_at IS NULL AND (seen IS NULL OR seen='') "
-        "AND (baseline=0 OR posted_at>=date('now','-3 day')) AND id NOT IN (SELECT job_id FROM alerts) "
+        "AND (baseline=0 OR posted_at>=date('now','-3 day')) "
+        "AND id NOT IN (SELECT job_id FROM alerts WHERE mode NOT LIKE 'failed%%' OR created>?) "
         "AND score>=? ORDER BY score DESC" % ",".join("?" * len(tiers)),
-        [since] + tiers + [int(cfg.get("min_score", 92))]).fetchall()
+        [since] + tiers + [retry, int(cfg.get("min_score") or 0)]).fetchall()
     pat = cfg.get("skip_titles", DEFAULT_SKIP_TITLES)
     rows = [r for r in rows if title_ok(r["title"], pat)]
     out = {"candidates": len(rows), "sent": 0, "disabled": 0, "failed": 0, "held": 0}
@@ -187,21 +200,23 @@ def process(conn, run_started):
             out["disabled"] += 1
         conn.commit()
         return out
-    if in_quiet_hours(now_local, int(cfg.get("quiet_start", 22)), int(cfg.get("quiet_end", 8))):
+    qs, qe = cfg.get("quiet_start"), cfg.get("quiet_end")
+    if qs is not None and qe is not None and in_quiet_hours(now_local, int(qs), int(qe)):
         out["held"] = len(rows)
-        log.info("quiet hours: holding %d alert(s) until %02d:00", len(rows), int(cfg.get("quiet_end", 8)))
+        log.info("quiet hours: holding %d alert(s) until %02d:00", len(rows), int(qe))
         return out
     midnight_utc = now_local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(dt.timezone.utc).isoformat(timespec="seconds")
     sent_today = conn.execute("SELECT count(*) FROM alerts WHERE mode='sent' AND created>=?", (midnight_utc,)).fetchone()[0]
-    room = max(0, int(cfg.get("daily_cap", 6)) - sent_today)
-    batch = rows[: min(room, max(0, int(cfg.get("max_per_run", 3))))]
+    cap = int(cfg.get("daily_cap") or 0)
+    room = max(0, cap - sent_today) if cap else len(rows)
+    batch = rows[: min(room, max(1, int(cfg.get("max_per_run") or 5)))]
     if not batch:
         out["held"] = len(rows)
         log.info("daily cap reached (%d); holding %d alert(s)", sent_today, len(rows))
         return out
     ok, info = send(batch_text(batch), cfg)
     for r in batch:
-        conn.execute("INSERT OR IGNORE INTO alerts(job_id, created, mode, text) VALUES (?,?,?,?)",
+        conn.execute("INSERT OR REPLACE INTO alerts(job_id, created, mode, text) VALUES (?,?,?,?)",
                      (r["id"], db.now(), "sent" if ok else "failed: " + info, text_for(r)))
     out["sent" if ok else "failed"] = len(batch)
     out["held"] = len(rows) - len(batch)

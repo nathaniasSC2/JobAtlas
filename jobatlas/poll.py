@@ -2,7 +2,10 @@
 
 Schedule: each board has next_due. Normal boards every poll.interval_hours (3 h);
 boards with >= hot_new_7d new jobs in the last week every hot_interval_hours (1 h).
-The systemd timer runs `jobatlas poll` hourly; only due boards are fetched.
+Boards that answer conditional requests (so a re-check is a cheap 304) are re-checked
+every match_interval_minutes if they've had a strong/good job, or fit_interval_minutes
+if any job passed the prefilter. `jobatlas watch` polls whatever is due continuously;
+`jobatlas poll` does one pass (e.g. from a timer).
 
 NEW = first seen in this run on a board that had been polled before. A board's
 first poll is its baseline (jobs get baseline=1) so a newly added board doesn't
@@ -117,6 +120,15 @@ def store(conn, board, res, run_started, stats, partial):
     return todo
 
 
+def fast_minutes(conn, board_id, cfgp):
+    """Re-check interval for a board whose re-checks are cheap: shorter the more it has fit the profile."""
+    if conn.execute("SELECT 1 FROM jobs WHERE board_id=? AND tier IN ('strong','good') LIMIT 1", (board_id,)).fetchone():
+        return float(cfgp.get("match_interval_minutes") or 1e9)
+    if conn.execute("SELECT 1 FROM jobs WHERE board_id=? AND prefilter='pass' LIMIT 1", (board_id,)).fetchone():
+        return float(cfgp.get("fit_interval_minutes") or 1e9)
+    return 1e9
+
+
 def board_done(conn, board, res, cfgp, now_dt, stats):
     now = _iso(now_dt)
     st = res.status
@@ -127,6 +139,8 @@ def board_done(conn, board, res, cfgp, now_dt, stats):
         week = _iso(now_dt - datetime.timedelta(days=7))
         new7 = conn.execute("SELECT COUNT(*) FROM jobs WHERE board_id=? AND first_seen>=? AND baseline=0", (board["id"], week)).fetchone()[0]
         hours = cfgp["hot_interval_hours"] if new7 >= cfgp["hot_new_7d"] else cfgp["interval_hours"]
+        if res.etag or res.last_modified or board["etag"] or board["last_modified"]:
+            hours = min(hours, fast_minutes(conn, board["id"], cfgp) / 60)
         # per-ATS floor, e.g. NEOGOV feeds are large: poll.ats_interval_hours = {"neogov": 12}
         hours = max(hours, float((cfgp.get("ats_interval_hours") or {}).get(board["ats"], 0)))
         conn.execute("UPDATE companies SET last_polled=?, last_ok=?, failures=0, last_error=NULL, etag=COALESCE(?, etag),"
@@ -270,12 +284,13 @@ def score_jobs(conn, ids=None, where=None):
     return counts
 
 
-def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=None, detail_budget=None, quiet=False):
+def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=None, detail_budget=None, quiet=False,
+        client=None, verify_budget=300):
     cfg = config.cfg()
     cfgp = cfg["poll"]
     conn = conn or db.connect()
     ensure_columns(conn)
-    client = Client(cfg, log=log.info)
+    client = client or Client(cfg, log=log.info)
     started_dt = _utcnow()
     started = _iso(started_dt)
     run_id = conn.execute("INSERT INTO runs(kind, started) VALUES ('poll', ?)", (started,)).lastrowid
@@ -283,7 +298,7 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
     boards = due_boards(conn, limit=limit, ats=ats, all_boards=all_boards, ids=ids)
     stats = {"boards": len(boards), "ok": 0, "failed": 0, "blocked": 0, "not_modified": 0, "new_jobs": 0, "closed": 0,
              "reopened": 0, "deactivated": 0, "jobs_seen": 0, "details": 0}
-    log.info("poll: %d boards due", len(boards))
+    (log.debug if quiet else log.info)("poll: %d boards due", len(boards))
     todo_all = []
     lock = threading.Lock()
     workers = workers or cfgp["workers"]
@@ -324,13 +339,13 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
     ids |= {r[0] for r in conn.execute("SELECT id FROM jobs WHERE prefilter='pass' AND closed_at IS NULL AND scored_at IS NULL")}
     tiers = score_jobs(conn, ids=sorted(ids))
     stats["scored"] = tiers
-    stats["verified"] = verify_urls(conn, client)
+    stats["verified"] = verify_urls(conn, client, verify_budget)
     new_matches = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE first_seen=? AND tier IN ('strong','good','fair') AND (baseline=0 OR posted_at>=?)",
         (started, (started_dt - datetime.timedelta(hours=72)).date().isoformat())).fetchone()[0]
     stats["new_matches"] = new_matches
     stats["http"] = client.stats
-    # alerts (disabled by default) + export
+    # alerts (disabled by default) right after scoring, then the export
     from . import alerts, export
     stats["alerts"] = alerts.process(conn, started)
     stats["export"] = export.write(conn)
@@ -339,5 +354,5 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
                   stats["new_jobs"], stats["closed"], new_matches, db.jdump({k: stats[k] for k in ("blocked", "deactivated", "details", "scored", "http", "alerts")}),
                   run_id))
     conn.commit()
-    log.info("poll done: %s", {k: v for k, v in stats.items() if k != "export"})
+    (log.debug if quiet else log.info)("poll done: %s", {k: v for k, v in stats.items() if k != "export"})
     return stats

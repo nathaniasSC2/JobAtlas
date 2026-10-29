@@ -37,8 +37,10 @@ flowchart LR
 - **Discovery** goes from a company name to its website, careers page and ATS
   embeds, or tries slug guesses that are kept only when the board proves it
   belongs to that company. A bot wall or 429 counts as "can't tell", never "no board".
-- **Polling** only touches boards that are due (1–3 h depending on activity). A
-  board's first poll is a baseline, so adding 500 boards doesn't flood "new".
+- **Polling** (`jobatlas watch`) runs continuously. Boards that have posted jobs
+  in your fields are re-checked every 5–15 min when a re-check is a cheap `304`,
+  the rest every 1–3 h, and a Strong match is sent the moment it's scored.
+  A board's first poll is a baseline, so adding 500 boards doesn't flood "new".
   Only postings that pass a cheap title/location prefilter get their full text fetched.
 - **Scoring** is rule-based and explainable (below).
 
@@ -92,15 +94,16 @@ export JOBATLAS_DATA=$PWD/data
 jobatlas init          # data dir + the example profile and employer list
 jobatlas seed --sources employers,remoteintech
 jobatlas discover-batch --budget 50
-jobatlas poll
+jobatlas poll          # one pass; `jobatlas watch` keeps going
 jobatlas top --n 20
 ```
 
 `jobatlas --help` lists the rest (`status`, `rescore`, `check`, `serve`…).
 The API (`jobatlas serve`, read-only, binds to 127.0.0.1) serves `/latest.json`,
-`/jobs/<id>`, `/status` and `/discover`. Alerts are configured in `config.json`
-with secrets in an env file ([example](examples/alerts.env.example)).
-`deploy/systemd/` has units for an hourly poll, nightly discovery and the API.
+`/jobs/<id>`, `/status` and `/discover`. Alerts (Discord webhook or DM, or
+iMessage) are configured in `config.json` with secrets in an env file
+([example](examples/alerts.env.example)). `deploy/systemd/` has the `watch`
+service and the API, plus poll and discovery timers if you'd rather run hourly.
 
 Tests run offline against responses recorded from real boards:
 

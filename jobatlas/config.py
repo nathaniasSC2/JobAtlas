@@ -30,6 +30,9 @@ DEFAULTS = {
         "interval_hours": 3.0,        # normal boards
         "hot_interval_hours": 1.0,    # boards that posted >= hot_new_7d new jobs in the last week
         "hot_new_7d": 5,
+        # boards that answer If-None-Match/If-Modified-Since, so a re-check is usually a 304:
+        "match_interval_minutes": 5,  # ... and have had a strong/good job
+        "fit_interval_minutes": 15,   # ... and have had a job pass the title/location prefilter
         "workers": 12,                # threads; per-host spacing still applies
         "max_failures": 6,            # consecutive failures before a board is deactivated
         "detail_budget": 1500,        # max per-job detail fetches per poll run
@@ -62,6 +65,12 @@ DEFAULTS = {
         # workable is added per company only when the name was seen on Workable (it rate-limits hard)
         "probe_ats": ["greenhouse", "ashby", "lever", "rippling", "bamboohr", "recruitee", "breezy", "teamtailor"],
     },
+    "watch": {
+        "tick_seconds": 30,           # how often `jobatlas watch` looks for due boards
+        "verify_budget": 50,          # match pages opened per cycle
+        "discover_hour": 3,           # local hour for the daily seed + discovery run (None = never)
+        "seed_sources": ["remoteintech", "employers"],
+    },
     "export": {"hours": 72, "min_tier": "fair"},
     "api": {"host": "127.0.0.1", "port": 8804},
     # Optional "already seen" ledger: a JSONL file of {company, title, url} rows that some other
@@ -70,11 +79,11 @@ DEFAULTS = {
     "alerts": {
         "enabled": False,
         "min_tier": "strong",
-        "min_score": 92,
-        "max_per_run": 3,
-        "daily_cap": 6,
-        "quiet_start": 22,
-        "quiet_end": 8,
+        "min_score": 0,
+        "max_per_run": 5,               # jobs bundled into one message; the rest go next cycle
+        "daily_cap": 0,                 # 0 = no cap
+        "quiet_start": None,            # e.g. 22 and 8 to hold alerts overnight; None = send any time
+        "quiet_end": None,
         "tz": "",                       # IANA name for quiet hours and the daily cap; empty = server local time
         "channel": "discord_webhook",   # discord_webhook | discord_dm | imessage
         # Secrets are read at send time from this env file, never stored in config.json:
@@ -82,6 +91,8 @@ DEFAULTS = {
         #   JOBATLAS_DISCORD_TOKEN, JOBATLAS_DISCORD_USER  (discord_dm: a bot token and your user id)
         #   BLUEBUBBLES_SERVER_URL, BLUEBUBBLES_PASSWORD   (imessage, via a BlueBubbles server)
         "env_file": "",
+        # read a secret under another name, to reuse an existing env file: {"JOBATLAS_DISCORD_TOKEN": "MY_BOT_TOKEN"}
+        "env_keys": {},
         "chat_guid": "",                # imessage only, e.g. iMessage;-;+1...
     },
 }

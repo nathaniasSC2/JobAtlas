@@ -1,0 +1,24 @@
+[Unit]
+# Polls continuously: boards that fit the profile every 5-15 min (where a re-check
+# is a cheap 304), the rest every 1-3 h. New jobs are scored and alerted in the same
+# cycle, and nightly discovery runs inside it. Use it instead of the poll and
+# discover timers.
+Description=JobAtlas watch (continuous poll + alerts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobatlas
+Environment=JOBATLAS_DATA=/var/lib/jobatlas
+WorkingDirectory=/opt/jobatlas
+ExecStart=/opt/jobatlas/bin/jobatlas watch
+Restart=always
+RestartSec=30
+TimeoutStopSec=300
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

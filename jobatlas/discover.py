@@ -8,7 +8,10 @@ Two routes, the ones that work best in practice:
      exact long slug for boards with no jobs to check).
 Bot walls and 429s are "can't tell", never cached as "no board".
 """
+import concurrent.futures as cf
+import logging
 import re
+import threading
 import urllib.parse
 
 from . import adapters, boards as boards_mod, config, db, names, registry
@@ -213,3 +216,46 @@ def discover(conn, client, company, website="", title="", source="discover", cfg
                   ("found:%d" % len(found)) if found else ("blocked" if (out["blocked"] or out["walled"]) and not out["rejected"] else "none")))
     conn.commit()
     return out
+
+
+def batch(client, budget=None, workers=8):
+    """Probe the next `budget` queued candidate names (one DB connection per worker thread)."""
+    log = logging.getLogger("jobatlas.discover")
+    conn = db.connect()
+    budget = budget or config.cfg()["discover"]["budget"]
+    rows = conn.execute("SELECT * FROM candidates WHERE probed_at IS NULL ORDER BY priority, first_seen LIMIT ?", (budget,)).fetchall()
+    local = threading.local()
+    found = {"companies": 0, "boards": 0, "by_ats": {}, "blocked": 0, "none": 0}
+    lock = threading.Lock()
+
+    def one(r):
+        if not hasattr(local, "conn"):
+            local.conn = db.connect()
+        try:
+            srcs = db.jload(r["sources"], ["?"]) or ["?"]
+            out = discover(local.conn, client, r["company"], website=r["website"] or "", source="batch:" + srcs[0],
+                           sources=",".join(srcs))
+        except Exception as e:  # noqa: BLE001
+            log.warning("discover %s failed: %s", r["company"], e)
+            return
+        with lock:
+            if out["boards"]:
+                found["companies"] += 1
+                for b in out["boards"]:
+                    if b["new"]:
+                        found["boards"] += 1
+                        found["by_ats"][b["ats"]] = found["by_ats"].get(b["ats"], 0) + 1
+            elif out["blocked"] or out["walled"]:
+                found["blocked"] += 1
+            else:
+                found["none"] += 1
+    log.info("discover-batch: %d candidates", len(rows))
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(one, rows))
+    found["probed"] = len(rows)
+    found["http"] = client.stats
+    conn.execute("INSERT INTO runs(kind, started, finished, boards, notes) VALUES ('discover', ?, ?, ?, ?)",
+                 (db.now(), db.now(), found["boards"], db.jdump(found)))
+    conn.commit()
+    log.info("discover-batch done: %s", found)
+    return found
