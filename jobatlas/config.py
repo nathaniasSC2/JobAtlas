@@ -68,6 +68,7 @@ DEFAULTS = {
     "watch": {
         "tick_seconds": 30,           # how often `jobatlas watch` looks for due boards
         "verify_budget": 50,          # match pages opened per cycle
+        "backfill_budget": 25,        # older jobs whose detail fetch failed, retried per cycle (new jobs come first)
         "discover_hour": 3,           # local hour for the daily seed + discovery run (None = never)
         "seed_sources": ["remoteintech", "employers"],
     },

@@ -285,7 +285,7 @@ def score_jobs(conn, ids=None, where=None):
 
 
 def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=None, detail_budget=None, quiet=False,
-        client=None, verify_budget=300):
+        client=None, verify_budget=300, backfill_budget=None):
     cfg = config.cfg()
     cfgp = cfg["poll"]
     conn = conn or db.connect()
@@ -333,8 +333,9 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
     conn.commit()
     budget = detail_budget if detail_budget is not None else cfgp["detail_budget"]
     stats["details"] = fetch_details(conn, client, todo_all, budget, workers)
-    if stats["details"] < budget:
-        stats["details_backfill"] = backfill_details(conn, client, budget - stats["details"], workers)
+    left = budget - stats["details"] if backfill_budget is None else min(backfill_budget, budget - stats["details"])
+    if left > 0:
+        stats["details_backfill"] = backfill_details(conn, client, left, workers)
     ids = {jid for jid, _ in todo_all}
     ids |= {r[0] for r in conn.execute("SELECT id FROM jobs WHERE prefilter='pass' AND closed_at IS NULL AND scored_at IS NULL")}
     tiers = score_jobs(conn, ids=sorted(ids))

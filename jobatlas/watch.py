@@ -43,7 +43,7 @@ def run(stop=None, cycles=None):
     log.info("watch: started")
     while not stop.is_set():
         if due_count(conn):
-            st = poll.run(conn, client=client, verify_budget=w["verify_budget"], quiet=True)
+            st = poll.run(conn, client=client, verify_budget=w["verify_budget"], backfill_budget=w["backfill_budget"], quiet=True)
             if st["new_jobs"] or st["alerts"].get("sent") or st["alerts"].get("failed"):
                 log.info("watch: %d boards, %d new jobs, %d new matches, alerts %s",
                          st["boards"], st["new_jobs"], st["new_matches"], st["alerts"])
