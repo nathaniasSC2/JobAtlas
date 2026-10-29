@@ -449,6 +449,9 @@ def assess(job, prof=None, company=""):
         skip.append("title ties the role to %s" % ", ".join(sorted(tstates)))
     if AGGREGATORS.search(company):
         skip.append("recruiting platform reposting another employer's job (%s)" % company)
+    for rx, why in prof.blocked_employers:
+        if rx.search(company):
+            skip.append(why)
     if not field:
         skip.append("title outside the profile's fields")
         field = prof.fields[0]["name"] if prof.fields else "other"

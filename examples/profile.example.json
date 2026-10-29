@@ -80,6 +80,10 @@
   {"regex": "\\b(game|games|gaming|esports?|twitch|streaming|creator)\\b", "fields": ["community"], "points": 3, "reason": "games/streaming employer"}
  ],
 
+ "blocked_employers": [
+  {"regex": "^\\s*example travel co\\b", "reason": "mass-posts commission-only 'remote travel agent' roles with no pay stated"}
+ ],
+
  "keywords": ["Linux", "Ubuntu", "Docker", "Tailscale", "Google Workspace", "Okta", "Jamf", "Zendesk", "Jira", "n8n", "Zapier",
               "Python", "Bash", "PowerShell", "Discord", "OBS", "LLM", "AI agent", "knowledge base", "SOP", "help desk"],
 

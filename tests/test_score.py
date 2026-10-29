@@ -145,6 +145,10 @@ class TestSkips(unittest.TestCase):
     def test_aggregator_repost(self):
         self.assertSkip(a("Technical Support Specialist", company="Jobgether"), "reposting")
 
+    def test_blocked_employer(self):
+        self.assertSkip(a("Customer Service Representative", company="Example Travel Co"), "mass-posts")
+        self.assertNotEqual(a("Customer Service Representative", company="Example Travel Software")["tier"], "skip")
+
     def test_ote_any_field(self):
         self.assertSkip(a("AI Operations Specialist", GOOD + " OTE Range: $150,000 to $200,000."), "OTE")
 

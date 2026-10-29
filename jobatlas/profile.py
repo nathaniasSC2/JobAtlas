@@ -111,6 +111,9 @@ class Profile:
         self.industry_fields = set(ind.get("fields") or [])
         self.employer_bonus = [(_rx(b["regex"]), set(b.get("fields") or []), int(b.get("points", 3)), b.get("reason", "employer bonus"))
                                for b in d.get("employer_bonus") or [] if b.get("regex")]
+        # employers whose postings are always skipped (mass posters, fake listings); the reason shows in the skip
+        self.blocked_employers = [(_rx(b["regex"]), b.get("reason", "blocked employer"))
+                                  for b in d.get("blocked_employers") or [] if b.get("regex")]
         self.keywords = list(dict.fromkeys(d.get("keywords") or []))
         lead = d.get("leadership") or {}
         self.leadership_stretch_years = int(lead.get("stretch_min_years", 8))
