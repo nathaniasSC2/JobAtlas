@@ -87,12 +87,19 @@ class AlertPolicyTest(DBTest):
 
     def test_defaults_send_every_strong_job_now(self):
         for i in range(7):
-            self.job(self.b, tier="strong", score=86 + i, ext=i)
+            self.job(self.b, tier="strong", score=86 + i, title="Support Specialist %d" % i)
         out, send = self.process()
         self.assertEqual((out["sent"], out["held"]), (5, 2))   # max_per_run bundles 5, the rest next cycle
         out, send = self.process()
         self.assertEqual(out["sent"], 2)
         self.assertIn("(Remote - US)", send.call_args[0][0])
+
+    def test_same_job_in_several_locations_is_one_line(self):
+        for loc in ("Remote - US", "New York", "Austin"):
+            self.job(self.b, tier="strong", score=90, location=loc)
+        out, send = self.process()
+        self.assertEqual(out["sent"], 1)
+        self.assertEqual(self.process()[0]["candidates"], 0)
 
     def test_quiet_hours_and_daily_cap_still_work(self):
         self.job(self.b, tier="strong", score=95)

@@ -189,6 +189,14 @@ def process(conn, run_started):
         [since] + tiers + [retry, int(cfg.get("min_score") or 0)]).fetchall()
     pat = cfg.get("skip_titles", DEFAULT_SKIP_TITLES)
     rows = [r for r in rows if title_ok(r["title"], pat)]
+    # one line per company + title: the same job posted in several locations is alerted once
+    keys, dups = set(), {}
+    for r in list(rows):
+        k = ((r["company"] or "").lower(), (r["title"] or "").lower())
+        if k in keys:
+            rows.remove(r)
+            dups.setdefault(k, []).append(r)
+        keys.add(k)
     out = {"candidates": len(rows), "sent": 0, "disabled": 0, "failed": 0, "held": 0}
     if not rows:
         return out
@@ -218,6 +226,9 @@ def process(conn, run_started):
     for r in batch:
         conn.execute("INSERT OR REPLACE INTO alerts(job_id, created, mode, text) VALUES (?,?,?,?)",
                      (r["id"], db.now(), "sent" if ok else "failed: " + info, text_for(r)))
+        for d in dups.get(((r["company"] or "").lower(), (r["title"] or "").lower()), []) if ok else []:
+            conn.execute("INSERT OR REPLACE INTO alerts(job_id, created, mode, text) VALUES (?,?,?,?)",
+                         (d["id"], db.now(), "duplicate", text_for(d)))
     out["sent" if ok else "failed"] = len(batch)
     out["held"] = len(rows) - len(batch)
     conn.commit()
