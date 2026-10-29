@@ -1,5 +1,6 @@
 """jobatlas CLI.
 
+  jobatlas init [--force]                                         data dir + example profile and employer list
   jobatlas seed [--sources remoteintech,employers] [--file F.json ...] [--seedmap M.json ...]
   jobatlas discover "Company" ["Title"] [--website URL] [--json]   resolve one company to its boards
   jobatlas discover-batch [--budget N] [--workers N]              probe queued candidates
@@ -40,6 +41,19 @@ def setup_logging(name="jobatlas", quiet=False):
         sh = logging.StreamHandler(sys.stderr)
         sh.setFormatter(fmt)
         root.addHandler(sh)
+
+
+def cmd_init(a):
+    """Create the data dir and copy in the example profile and employer list (existing files are kept)."""
+    import shutil
+    config.ensure_dirs()
+    for src, dst in (("profile.example.json", config.PROFILE_FILE), ("employers.example.json", os.path.join(config.DATA, "employers.json"))):
+        if os.path.exists(dst) and not a.force:
+            print("kept   %s" % dst)
+        else:
+            shutil.copyfile(os.path.join(config.EXAMPLES, src), dst)
+            print("wrote  %s" % dst)
+    print("Edit the profile, then: jobatlas seed")
 
 
 def cmd_seed(a):
@@ -196,6 +210,9 @@ def cmd_check(a):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="jobatlas", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("init", help="create the data dir with the example profile and employer list")
+    s.add_argument("--force", action="store_true", help="overwrite existing files")
+    s.set_defaults(fn=cmd_init)
     s = sub.add_parser("seed")
     s.add_argument("--sources", default="remoteintech,employers")
     s.add_argument("--file", action="append", help="JSON list of {company, url, apply_url}")
@@ -248,7 +265,7 @@ def main(argv=None):
     s.add_argument("--text-file")
     s.set_defaults(fn=cmd_check)
     a = p.parse_args(argv)
-    setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("status", "top", "check", "export"))
+    setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("init", "status", "top", "check", "export"))
     if a.cmd in ("poll", "discover-batch", "details"):
         from .runlock import Busy, RunLock
         try:

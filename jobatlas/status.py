@@ -55,7 +55,7 @@ def render(s):
     out.append("")
     pr = s["profile"]
     out.append("Profile: %s%s (hash %s); fields %s; home %s; floor $%d/$%.2fhr, minimum $%d/$%.2fhr" %
-               (pr["file"], " [THE EXAMPLE: copy it to <data>/profile.json]" if pr["example"] else "", pr["hash"],
+               (pr["file"], " [THE EXAMPLE: run `jobatlas init` and edit <data>/profile.json]" if pr["example"] else "", pr["hash"],
                 ", ".join(pr["fields"]), pr["home_state"] or "-", pr["floor"][0], pr["floor"][1], pr["minimum"][0], pr["minimum"][1]))
     out.append("Ledger: %s" % s["ledger"])
     out.append("Alerts: %s" % ("ENABLED" if s["alerts_enabled"] else "disabled (nothing is sent)"))

@@ -87,16 +87,16 @@ for boards that are searched rather than read in full.
 ## Quick start
 
 ```bash
-export JOBATLAS_DATA=$PWD/data && mkdir -p data
-cp examples/profile.example.json data/profile.json
-cp examples/employers.example.json data/employers.json
-bin/jobatlas seed --sources employers,remoteintech
-bin/jobatlas discover-batch --budget 50
-bin/jobatlas poll
-bin/jobatlas top --n 20
+pip install .          # or run bin/jobatlas from the checkout
+export JOBATLAS_DATA=$PWD/data
+jobatlas init          # data dir + the example profile and employer list
+jobatlas seed --sources employers,remoteintech
+jobatlas discover-batch --budget 50
+jobatlas poll
+jobatlas top --n 20
 ```
 
-`bin/jobatlas --help` lists the rest (`status`, `rescore`, `check`, `serve`…).
+`jobatlas --help` lists the rest (`status`, `rescore`, `check`, `serve`…).
 The API (`jobatlas serve`, read-only, binds to 127.0.0.1) serves `/latest.json`,
 `/jobs/<id>`, `/status` and `/discover`. Alerts are configured in `config.json`
 with secrets in an env file ([example](examples/alerts.env.example)).
