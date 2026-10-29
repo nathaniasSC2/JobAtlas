@@ -102,7 +102,7 @@ jobatlas top --n 20
 The API (`jobatlas serve`, read-only, binds to 127.0.0.1) serves `/latest.json`,
 `/jobs/<id>`, `/status` and `/discover`. Alerts (Discord webhook or DM, or
 iMessage) are configured in `config.json` with secrets in an env file
-([example](examples/alerts.env.example)). `deploy/systemd/` has the `watch`
+([example](examples/alerts.env.example)); `jobatlas alerts test` checks the setup. `deploy/systemd/` has the `watch`
 service and the API, plus poll and discovery timers if you'd rather run hourly.
 
 Tests run offline against responses recorded from real boards:

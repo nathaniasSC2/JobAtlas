@@ -57,6 +57,15 @@ class InitTest(unittest.TestCase):
             profile.load(path=config.PROFILE_FILE)
 
 
+    def test_alerts_test(self):
+        with mock.patch("jobatlas.alerts.send", return_value=(True, "discord webhook ok")) as send:
+            self.assertIn("sent via discord_webhook", run("alerts", "test"))
+        send.assert_called_once()
+        with mock.patch("jobatlas.alerts.send", return_value=(False, "missing JOBATLAS_DISCORD_WEBHOOK")), \
+                self.assertRaises(SystemExit):
+            run("alerts", "test")
+
+
 class ProfileCheckTest(unittest.TestCase):
     def setUp(self):
         with open(profile.EXAMPLE, encoding="utf8") as f:

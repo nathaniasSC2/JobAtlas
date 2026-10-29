@@ -9,6 +9,7 @@
   jobatlas rescore                                                re-run the filter on open jobs
   jobatlas status [--json]
   jobatlas profile check [--file F]                               validate profile.json
+  jobatlas alerts test                                            send a test message
   jobatlas export                                                 rewrite export/latest.json
   jobatlas top [--n 20] [--hours 72] [--fresh-days N] [--exclude-seen] [--json]
   jobatlas serve [--port 8804]
@@ -161,6 +162,15 @@ def cmd_profile_check(a):
         sys.exit(1)
 
 
+def cmd_alerts_test(a):
+    from . import alerts
+    cfg = config.cfg()["alerts"]
+    ok, info = alerts.send("JobAtlas test alert: alerts reach you here.", cfg)
+    print("%s via %s: %s" % ("sent" if ok else "FAILED", cfg.get("channel") or "discord_webhook", info))
+    if not ok:
+        sys.exit(1)
+
+
 def cmd_export(a):
     from . import export
     print(json.dumps(export.write(db.connect())))
@@ -236,6 +246,9 @@ def main(argv=None):
     c = s.add_subparsers(dest="profile_cmd", required=True).add_parser("check", help="validate profile.json")
     c.add_argument("--file", help="default: <data>/profile.json")
     c.set_defaults(fn=cmd_profile_check)
+    s = sub.add_parser("alerts", help="alert tools")
+    c = s.add_subparsers(dest="alerts_cmd", required=True).add_parser("test", help="send a test message (even with alerts off)")
+    c.set_defaults(fn=cmd_alerts_test)
     s = sub.add_parser("export")
     s.set_defaults(fn=cmd_export)
     s = sub.add_parser("top")
@@ -256,7 +269,7 @@ def main(argv=None):
     s.add_argument("--text-file")
     s.set_defaults(fn=cmd_check)
     a = p.parse_args(argv)
-    setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("init", "status", "profile", "top", "check", "export"))
+    setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("init", "status", "profile", "alerts", "top", "check", "export"))
     try:
         dispatch(a)
     except profile.ProfileError as e:
