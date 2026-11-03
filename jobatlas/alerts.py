@@ -85,7 +85,11 @@ def written_questions(questions):
             if re.search(r"cover letter", label, re.I):
                 out.append("Cover letter")
             continue
-        if t in ("textarea", "long_answer") or (WRITTEN.search(label) and not FACT.search(label)):
+        fact, written = bool(FACT.search(label)), bool(WRITTEN.search(label))
+        if t in ("textarea", "long_answer"):
+            if written or not fact:     # an address or a salary in a big text box is still a fact
+                out.append(label)
+        elif written and not fact:
             out.append(label)
     return out
 

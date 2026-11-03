@@ -145,6 +145,7 @@ class CardAndCatchupTest(AlertDBTest):
         short = {"label": "Describe a time you fixed a payroll error.", "required": True, "type": "input_text"}
         self.assertEqual(alerts.written_questions([short, {"label": "How did you hear about us? Please explain", "type": "input_text"}]),
                          [short["label"]])
+        self.assertEqual(alerts.written_questions([{"label": "What is your current address?", "type": "textarea"}]), [])
 
     def test_card_says_what_the_form_needs(self):
         self.job_with([ESSAY, PICK], title="Payroll Specialist")
