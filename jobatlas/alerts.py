@@ -15,6 +15,10 @@ alerts.env_file (KEY=value lines), never stored in the repo or config.json:
 
 With alerts.enabled false nothing is sent; would-be messages are recorded in
 the alerts table (mode "disabled") so the policy can be checked first.
+
+Each extra profile (config "profiles") has its own alert settings, over the
+defaults (so off until its own "enabled": true), and its own record in the
+alerts table. It is never sent the main profile's settings or recipient.
 """
 import datetime as dt
 import json
@@ -25,7 +29,7 @@ import urllib.request
 import uuid
 from zoneinfo import ZoneInfo
 
-from . import __version__, config, db
+from . import __version__, config, db, profile
 
 log = logging.getLogger("jobatlas.alerts")
 
@@ -53,14 +57,19 @@ def secrets(cfg):
     return env
 
 
-def text_for(r):
+def text_for(r, cfg=None):
+    """One job as a message. alerts.style "plain" drops the score and the scorer's reason."""
+    cfg = cfg or {}
     facts = db.jload(r["facts"], {}) or {}
     pay = ""
     if facts.get("pay_top"):
         pay = (" $%dk" % round(facts["pay_top"] / 1000)) if facts.get("pay_kind") == "year" else (" $%.0f/hr" % facts["pay_top"])
     where = (" (%s)" % r["location"][:60]) if r["location"] else ""
+    label = cfg.get("label") or "JobAtlas Strong"
+    if cfg.get("style") == "plain":
+        return ("%s: %s at %s%s%s\n%s" % (label, r["title"], r["company"], where, (", up to" + pay) if pay else "", r["url"]))[:600]
     why = (db.jload(r["reasons"], []) or [""])[0]
-    return ("JobAtlas Strong (%d): %s at %s%s%s. %s\n%s" % (r["score"], r["title"], r["company"], where, pay, why, r["url"]))[:600]
+    return ("%s (%d): %s at %s%s%s. %s\n%s" % (label, r["score"], r["title"], r["company"], where, pay, why, r["url"]))[:600]
 
 
 DISCORD_API = "https://discord.com/api/v10"
@@ -152,17 +161,35 @@ def title_ok(title, pattern):
     return not (pattern and re.search(pattern, title or "", re.I))
 
 
-def batch_text(rows):
+def batch_text(rows, cfg=None):
+    cfg = cfg or {}
     if len(rows) == 1:
-        return text_for(rows[0])
-    lines = ["JobAtlas: %d strong new matches" % len(rows)]
-    for r in rows:
-        lines.append("")
-        lines.append(text_for(r).replace("JobAtlas Strong ", "", 1))
+        return text_for(rows[0], cfg)
+    label = cfg.get("label") or "JobAtlas Strong"
+    if cfg.get("style") == "plain":
+        lines = ["%s: %d new matches" % (label, len(rows))]
+        lines += [x for r in rows for x in ("", text_for(r, cfg).split(": ", 1)[1])]
+    else:
+        lines = ["JobAtlas: %d strong new matches" % len(rows)] if label == "JobAtlas Strong" else ["%s: %d new matches" % (label, len(rows))]
+        lines += [x for r in rows for x in ("", text_for(r, cfg).replace(label + " ", "", 1))]
     return "\n".join(lines)[:1500]
 
 
 def process(conn, run_started):
+    """Alerts for every profile (main first); see process_one. -> totals, plus by_profile when there are extras."""
+    keys = ("candidates", "sent", "disabled", "failed", "held")
+    out = dict.fromkeys(keys, 0)
+    seekers = profile.seekers()
+    for s in seekers:
+        o = process_one(conn, s.name, s.alerts)
+        for k in keys:
+            out[k] += o.get(k, 0)
+        if len(seekers) > 1:
+            out.setdefault("by_profile", {})[s.name] = o
+    return out
+
+
+def process_one(conn, name, cfg):
     """Message about Strong jobs first seen in the last day (not already alerted or in the ledger).
 
     Called right after each poll cycle scores its new jobs. Policy (all optional):
@@ -172,21 +199,21 @@ def process(conn, run_started):
       * at most alerts.daily_cap sent jobs per local day (0 = no cap), highest scores first,
         and up to alerts.max_per_run jobs bundled into one message.
     A failed send is retried after 5 minutes. With alerts.enabled false, candidates are
-    only recorded (mode "disabled").
+    only recorded (mode "disabled"). `name` is the profile, `cfg` its alert settings.
     """
-    cfg = config.cfg()["alerts"]
     now_local = local_now(cfg.get("tz") or "")
     min_rank = {"strong": 0, "good": 1, "fair": 2}.get(cfg.get("min_tier", "strong"), 0)
     tiers = [t for t, i in (("strong", 0), ("good", 1), ("fair", 2)) if i <= min_rank]
     utc = dt.datetime.now(dt.timezone.utc)
     since = (utc - dt.timedelta(hours=int(cfg.get("lookback_hours", 24)))).isoformat(timespec="seconds")
     retry = (utc - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
+    src, args = db.scored(conn, name)
     rows = conn.execute(
-        "SELECT * FROM jobs WHERE first_seen>=? AND tier IN (%s) AND closed_at IS NULL AND (seen IS NULL OR seen='') "
+        "SELECT * FROM %s WHERE first_seen>=? AND tier IN (%s) AND closed_at IS NULL AND (seen IS NULL OR seen='') "
         "AND (baseline=0 OR posted_at>=date('now','-3 day')) "
-        "AND id NOT IN (SELECT job_id FROM alerts WHERE mode NOT LIKE 'failed%%' OR created>?) "
-        "AND score>=? ORDER BY score DESC" % ",".join("?" * len(tiers)),
-        [since] + tiers + [retry, int(cfg.get("min_score") or 0)]).fetchall()
+        "AND id NOT IN (SELECT job_id FROM alerts WHERE profile=? AND (mode NOT LIKE 'failed%%' OR created>?)) "
+        "AND score>=? ORDER BY score DESC" % (src, ",".join("?" * len(tiers))),
+        args + [since] + tiers + [name, retry, int(cfg.get("min_score") or 0)]).fetchall()
     pat = cfg.get("skip_titles", DEFAULT_SKIP_TITLES)
     rows = [r for r in rows if title_ok(r["title"], pat)]
     # one line per company + title: the same job posted in several locations is alerted once
@@ -200,35 +227,37 @@ def process(conn, run_started):
     out = {"candidates": len(rows), "sent": 0, "disabled": 0, "failed": 0, "held": 0}
     if not rows:
         return out
+    who = "" if name == config.MAIN else " (%s)" % name
     if not cfg.get("enabled"):
         for r in rows:
-            msg = text_for(r)
-            conn.execute("INSERT OR IGNORE INTO alerts(job_id, created, mode, text) VALUES (?,?,?,?)", (r["id"], db.now(), "disabled", msg))
-            log.info("alerts disabled; would text: %s", msg.replace("\n", " | "))
+            msg = text_for(r, cfg)
+            conn.execute("INSERT OR IGNORE INTO alerts(job_id, profile, created, mode, text) VALUES (?,?,?,?,?)",
+                         (r["id"], name, db.now(), "disabled", msg))
+            log.info("alerts%s disabled; would text: %s", who, msg.replace("\n", " | "))
             out["disabled"] += 1
         conn.commit()
         return out
     qs, qe = cfg.get("quiet_start"), cfg.get("quiet_end")
     if qs is not None and qe is not None and in_quiet_hours(now_local, int(qs), int(qe)):
         out["held"] = len(rows)
-        log.info("quiet hours: holding %d alert(s) until %02d:00", len(rows), int(qe))
+        log.info("quiet hours%s: holding %d alert(s) until %02d:00", who, len(rows), int(qe))
         return out
     midnight_utc = now_local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(dt.timezone.utc).isoformat(timespec="seconds")
-    sent_today = conn.execute("SELECT count(*) FROM alerts WHERE mode='sent' AND created>=?", (midnight_utc,)).fetchone()[0]
+    sent_today = conn.execute("SELECT count(*) FROM alerts WHERE profile=? AND mode='sent' AND created>=?", (name, midnight_utc)).fetchone()[0]
     cap = int(cfg.get("daily_cap") or 0)
     room = max(0, cap - sent_today) if cap else len(rows)
     batch = rows[: min(room, max(1, int(cfg.get("max_per_run") or 5)))]
     if not batch:
         out["held"] = len(rows)
-        log.info("daily cap reached (%d); holding %d alert(s)", sent_today, len(rows))
+        log.info("daily cap reached%s (%d); holding %d alert(s)", who, sent_today, len(rows))
         return out
-    ok, info = send(batch_text(batch), cfg)
+    ok, info = send(batch_text(batch, cfg), cfg)
     for r in batch:
-        conn.execute("INSERT OR REPLACE INTO alerts(job_id, created, mode, text) VALUES (?,?,?,?)",
-                     (r["id"], db.now(), "sent" if ok else "failed: " + info, text_for(r)))
+        conn.execute("INSERT OR REPLACE INTO alerts(job_id, profile, created, mode, text) VALUES (?,?,?,?,?)",
+                     (r["id"], name, db.now(), "sent" if ok else "failed: " + info, text_for(r, cfg)))
         for d in dups.get(((r["company"] or "").lower(), (r["title"] or "").lower()), []) if ok else []:
-            conn.execute("INSERT OR REPLACE INTO alerts(job_id, created, mode, text) VALUES (?,?,?,?)",
-                         (d["id"], db.now(), "duplicate", text_for(d)))
+            conn.execute("INSERT OR REPLACE INTO alerts(job_id, profile, created, mode, text) VALUES (?,?,?,?,?)",
+                         (d["id"], name, db.now(), "duplicate", text_for(d, cfg)))
     out["sent" if ok else "failed"] = len(batch)
     out["held"] = len(rows) - len(batch)
     conn.commit()

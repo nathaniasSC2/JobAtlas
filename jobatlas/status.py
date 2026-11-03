@@ -30,7 +30,18 @@ def collect(conn):
                                           " FROM runs ORDER BY id DESC LIMIT 5")]
     p = profile.load()
     alerts_cfg = config.cfg()["alerts"]
-    return {"boards_by_ats": by_ats, "boards_total": sum(r["n"] for r in by_ats),
+    extras = []
+    for s in profile.seekers()[1:]:
+        t = {r["tier"]: r["n"] for r in conn.execute(
+            "SELECT ps.tier, COUNT(*) n FROM profile_scores ps JOIN jobs j ON j.id=ps.job_id WHERE ps.profile=? AND j.closed_at IS NULL"
+            " AND j.routed_to=? GROUP BY ps.tier", (s.name, s.name))}
+        claimed = conn.execute("SELECT COUNT(*) FROM jobs WHERE routed_to=? AND closed_at IS NULL AND tier IN ('strong','good','fair')",
+                               (s.name,)).fetchone()[0]
+        extras.append({"name": s.name, "file": s.prof.src, "hash": s.prof.hash, "claims": list(s.claims), "open_by_tier": t,
+                       "claimed_open": claimed, "ledger": ledger.source(s.ledger), "alerts_enabled": bool(s.alerts.get("enabled")),
+                       "problems": profile.check_file(s.prof.src)})
+    extras += [{"name": n, "error": e} for n, e in profile.EXTRA_ERRORS.items()]
+    return {"boards_by_ats": by_ats, "boards_total": sum(r["n"] for r in by_ats), "profiles": extras,
             "boards_active": sum(r["active"] or 0 for r in by_ats), "jobs": dict(j), "open_by_tier": tiers,
             "failing_boards": fails, "candidates": dict(cand), "recent_runs": runs,
             "profile": {"file": p.src or "NONE (no profile found)", "example": p.src.endswith("profile.example.json"), "hash": p.hash,
@@ -63,6 +74,15 @@ def render(s):
         out.append("  %d profile problem(s), see `jobatlas profile check`: %s" % (len(pr["problems"]), pr["problems"][0]))
     out.append("Ledger: %s" % s["ledger"])
     out.append("Alerts: %s" % ("ENABLED" if s["alerts_enabled"] else "disabled (nothing is sent)"))
+    for x in s.get("profiles") or []:
+        if x.get("error"):
+            out.append("Profile %s: NOT LOADED (%s)" % (x["name"], x["error"]))
+            continue
+        out.append("Profile %s: %s (hash %s); open %s; claims %s (%d open jobs taken from main); ledger %s; alerts %s" %
+                   (x["name"], x["file"], x["hash"], ", ".join("%s %d" % kv for kv in sorted(x["open_by_tier"].items())) or "none",
+                    "/".join(x["claims"]) or "nothing", x["claimed_open"], x["ledger"], "ENABLED" if x["alerts_enabled"] else "disabled"))
+        if x["problems"]:
+            out.append("  %d profile problem(s): %s" % (len(x["problems"]), x["problems"][0]))
     if s["failing_boards"]:
         out.append("")
         out.append("Failing / blocked boards (top 25):")

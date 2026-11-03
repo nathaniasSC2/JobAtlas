@@ -67,6 +67,33 @@ $ jobatlas check "Customer Onboarding Specialist" --location "Remote - US" --tex
             "required weekend work: 'Tuesday through Saturday'"]
 ```
 
+A profile can also list `required_gaps` (things you don't have, e.g. a CPA or a
+second language; they count only on the posting's *required* lines), a pay
+`target_year`, and the leadership titles you're aiming for (`leadership.ok_titles`).
+
+## Two job seekers, one crawl
+
+`config.json` `"profiles"` adds more people (a household, say). Every job is
+scored for each profile and goes to **one** of them, so two people never apply
+to the same posting:
+
+```json
+"profiles": {"partner": {"file": "profile-partner.json", "claim_tier": "good",
+                         "main_keeps_fields": ["tech_support"],
+                         "ledger": {"path": "/srv/partner/seen.jsonl"},
+                         "alerts": {"enabled": true, "channel": "discord_webhook", "style": "plain"}}}
+```
+
+- A job that is `good` or better for the partner is theirs, even if it also fits
+  the main profile, except in `main_keeps_fields`, where it takes `strong`.
+- Otherwise the main profile has first pick; jobs only the partner fits are theirs.
+- A job that was already sent to someone stays with them.
+
+Each profile has its own export (`export/latest-partner.json`, `jobatlas top
+--profile partner`, `/latest.json?profile=partner`), ledger and alert settings.
+An extra profile never inherits the main profile's alert recipient.
+[Second example profile](examples/profile.partner.example.json).
+
 ## Supported hiring systems
 
 | | |

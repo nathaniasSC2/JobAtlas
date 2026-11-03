@@ -3,10 +3,12 @@
 ledger.path (config.json) names a JSONL file that another tool writes: an
 application tracker, a spreadsheet export, a digest that remembers what it
 sent. Each line is {"company", "title", "url", "alt_urls"?, "feed"?, "date"?}.
-JobAtlas only reads it. A job matches by URL (normalised, keeping job-id query
-parameters) or by company + the same set of title words.
+JobAtlas only reads it, and reads it again when the file changes. A job matches
+by URL (normalised, keeping job-id query parameters) or by company + the same
+set of title words. Extra profiles (config "profiles") each have their own.
 """
 import json
+import os
 import re
 import urllib.parse
 
@@ -59,24 +61,30 @@ class Ledger:
         return (e, "company+title") if e else (None, None)
 
 
-_LEDGER = None
+_LEDGERS = {}      # path -> (mtime, Ledger)
 
 
-def ledger():
-    global _LEDGER
-    if _LEDGER is None:
-        _LEDGER = Ledger((config.cfg().get("ledger") or {}).get("path") or "")
-    return _LEDGER
+def ledger(path=None):
+    """The ledger at `path` (default: config ledger.path), reloaded when the file changes."""
+    if path is None:
+        path = (config.cfg().get("ledger") or {}).get("path") or ""
+    try:
+        mtime = os.path.getmtime(path) if path else None
+    except OSError:
+        mtime = None
+    if _LEDGERS.get(path, (False,))[0] != mtime:
+        _LEDGERS[path] = (mtime, Ledger(path))
+    return _LEDGERS[path][1]
 
 
-def source():
-    L = ledger()
+def source(path=None):
+    L = ledger(path)
     return "%s (%d entries)" % (L.path, L.entries) if L.path else "none configured"
 
 
-def seen(company, title, urls):
+def seen(company, title, urls, path=None):
     """-> note like "digest 2026-10-20 (url)" or None."""
-    e, how = ledger().match(company or "", title or "", [u for u in urls if u])
+    e, how = ledger(path).match(company or "", title or "", [u for u in urls if u])
     if not e:
         return None
     return ("%s %s (%s)" % (e.get("feed", "seen"), (e.get("date") or "")[:10], how)).replace("  ", " ")

@@ -5,7 +5,7 @@ List:   POST https://<tenant>.<wdN>.myworkdayjobs.com/wday/cxs/<tenant>/<site>/j
 Detail: GET  .../wday/cxs/<tenant>/<site><externalPath>
 
 Token is "tenant|wdN|site". Big tenants list thousands of jobs, so the poll
-searches the profile's search_terms (a few pages each) instead of paging the whole
+searches the profiles' search_terms (a few pages each) instead of paging the whole
 board: PARTIAL = True, and a job only counts as closed after it has been
 missing for several days (poll.py). robots.txt on these hosts disallows the
 human site paths (/External/...) but not /wday/cxs/.
@@ -47,7 +47,7 @@ def fetch(client, token, etag=None, last_modified=None, terms=None):
         return Result("error", error="bad workday token")
     api = "%s/wday/cxs/%s/%s/jobs" % (base, tenant, site)
     seen, jobs, total = set(), [], None
-    queries = [({}, t, PAGES) for t in (terms if terms is not None else profile.load().search_terms)]
+    queries = [({}, t, PAGES) for t in (terms if terms is not None else profile.search_terms())]
     if terms is None:
         queries = [(q.get("appliedFacets") or {}, q.get("searchText") or "", FACET_PAGES) for q in FACETS.get(token, [])] + queries
     for facets, term, pages in queries:

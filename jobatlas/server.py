@@ -2,7 +2,7 @@
 default) or a private network interface, never the open internet.
 
   GET /health
-  GET /latest.json   ?hours=72&min_tier=fair&include_seen=1&limit=500&q=
+  GET /latest.json   ?hours=72&min_tier=fair&include_seen=1&limit=500&q=&profile=  (profile: an extra profile's matches)
   GET /jobs/<id>     one job incl. description
   GET /status        same numbers as `jobatlas status`
   GET /discover      ?company=...&title=...&website=...  (live lookup; one at a time)
@@ -13,7 +13,7 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, db, export, status as status_mod
+from . import config, db, export, profile, status as status_mod
 
 log = logging.getLogger("jobatlas.api")
 _discover_lock = threading.Lock()
@@ -44,9 +44,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "last_poll": last["finished"] if last else None,
                                         "last_new_matches": last["new_matches"] if last else None})
             if u.path in ("/latest.json", "/latest"):
+                name = qs.get("profile") or None
+                if name and name not in [s.name for s in profile.seekers()]:
+                    return self._send(404, {"error": "no such profile"})
                 rows = export.query(conn, hours=int(qs.get("hours", config.cfg()["export"]["hours"])), min_tier=qs.get("min_tier"),
-                                    include_seen=qs.get("include_seen", "1") != "0", limit=int(qs.get("limit", 500)), q=qs.get("q"))
-                return self._send(200, {"generated": db.now(), "count": len(rows), "jobs": [export.row_out(r) for r in rows]})
+                                    include_seen=qs.get("include_seen", "1") != "0", limit=int(qs.get("limit", 500)), q=qs.get("q"),
+                                    profile_name=name)
+                return self._send(200, {"generated": db.now(), "profile": name or config.MAIN, "count": len(rows),
+                                        "jobs": [export.row_out(r) for r in rows]})
             if u.path.startswith("/jobs/"):
                 r = conn.execute("SELECT * FROM jobs WHERE id=?", (u.path.rsplit("/", 1)[-1],)).fetchone()
                 if not r:

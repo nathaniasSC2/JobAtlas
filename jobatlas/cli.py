@@ -8,10 +8,12 @@
   jobatlas watch                                                  poll continuously; alerts within minutes
   jobatlas rescore                                                re-run the filter on open jobs
   jobatlas status [--json]
-  jobatlas profile check [--file F]                               validate profile.json
-  jobatlas alerts test                                            send a test message
-  jobatlas export                                                 rewrite export/latest.json
-  jobatlas top [--n 20] [--hours 72] [--fresh-days N] [--exclude-seen] [--json]
+  jobatlas profile check [--file F | --profile NAME]              validate profile.json (or an extra profile's file)
+  jobatlas alerts test [--profile NAME]                           send a test message
+  jobatlas export                                                 rewrite export/latest*.json
+  jobatlas top [--profile NAME] [--n 20] [--hours 72] [--fresh-days N] [--exclude-seen] [--json]
+
+--profile picks one of config.json "profiles" (default: the main profile, profile.json).
   jobatlas serve [--port 8804]
   jobatlas check "title" [--location L] [--text-file F]           score an ad-hoc posting (debug)
 """
@@ -131,10 +133,10 @@ def cmd_rescore(a):
     Jobs that newly pass the prefilter get their details on the next poll (backfill)."""
     from . import export, poll, score
     conn = db.connect()
-    prof = score.profile_mod.load()
+    profs = [s.prof for s in profile.seekers()]
     changed = 0
     for r in conn.execute("SELECT id, title, location, workplace, prefilter FROM jobs WHERE closed_at IS NULL").fetchall():
-        pf = score.prefilter(dict(r), prof)
+        pf = score.prefilter_all(dict(r), profs)
         if pf != r["prefilter"]:
             conn.execute("UPDATE jobs SET prefilter=?, tier=CASE WHEN ?='pass' THEN tier ELSE NULL END WHERE id=?", (pf, pf, r["id"]))
             changed += 1
@@ -151,7 +153,13 @@ def cmd_status(a):
 
 
 def cmd_profile_check(a):
-    path = a.file or config.PROFILE_FILE
+    if a.profile and a.profile != config.MAIN:
+        e = (config.cfg().get("profiles") or {}).get(a.profile)
+        if e is None:
+            sys.exit("no profile named %r in config.json profiles" % a.profile)
+        path = profile.extra_path(e)
+    else:
+        path = a.file or config.PROFILE_FILE
     if not os.path.exists(path):
         sys.exit("no profile at %s (the example is used): run `jobatlas init`" % path)
     problems = profile.check_file(path)
@@ -162,10 +170,17 @@ def cmd_profile_check(a):
         sys.exit(1)
 
 
+def seeker_or_exit(name):
+    try:
+        return profile.seeker(name)
+    except ValueError as e:
+        sys.exit(str(e))
+
+
 def cmd_alerts_test(a):
     from . import alerts
-    cfg = config.cfg()["alerts"]
-    ok, info = alerts.send("JobAtlas test alert: alerts reach you here.", cfg)
+    cfg = seeker_or_exit(a.profile).alerts
+    ok, info = alerts.send(a.message or "JobAtlas test alert: alerts reach you here.", cfg)
     print("%s via %s: %s" % ("sent" if ok else "FAILED", cfg.get("channel") or "discord_webhook", info))
     if not ok:
         sys.exit(1)
@@ -179,8 +194,9 @@ def cmd_export(a):
 def cmd_top(a):
     from . import export
     conn = db.connect()
+    seeker_or_exit(a.profile)
     rows = export.query(conn, hours=a.hours, min_tier=a.min_tier, include_seen=not a.exclude_seen, limit=a.n * 5,
-                        fresh_days=a.fresh_days)
+                        fresh_days=a.fresh_days, profile_name=a.profile)
     out = [export.row_out(r) for r in rows][: a.n]
     if a.json:
         print(json.dumps(out, indent=1, ensure_ascii=False))
@@ -199,7 +215,8 @@ def cmd_serve(a):
 def cmd_check(a):
     from . import score
     desc = open(a.text_file, encoding="utf8").read() if a.text_file else ""
-    print(json.dumps(score.assess({"title": a.title, "location": a.location or "", "description": desc, "workplace": a.workplace or ""}), indent=1))
+    print(json.dumps(score.assess({"title": a.title, "location": a.location or "", "description": desc, "workplace": a.workplace or ""},
+                                  seeker_or_exit(a.profile).prof), indent=1))
 
 
 def main(argv=None):
@@ -245,13 +262,17 @@ def main(argv=None):
     s = sub.add_parser("profile", help="profile tools")
     c = s.add_subparsers(dest="profile_cmd", required=True).add_parser("check", help="validate profile.json")
     c.add_argument("--file", help="default: <data>/profile.json")
+    c.add_argument("--profile", help="an extra profile from config.json profiles")
     c.set_defaults(fn=cmd_profile_check)
     s = sub.add_parser("alerts", help="alert tools")
     c = s.add_subparsers(dest="alerts_cmd", required=True).add_parser("test", help="send a test message (even with alerts off)")
+    c.add_argument("--profile", help="use this profile's alert settings (default: main)")
+    c.add_argument("--message", help="text to send instead of the stock test line")
     c.set_defaults(fn=cmd_alerts_test)
     s = sub.add_parser("export")
     s.set_defaults(fn=cmd_export)
     s = sub.add_parser("top")
+    s.add_argument("--profile", help="an extra profile from config.json profiles (default: main)")
     s.add_argument("--n", type=int, default=20)
     s.add_argument("--hours", type=int, default=72)
     s.add_argument("--fresh-days", type=int)
@@ -267,6 +288,7 @@ def main(argv=None):
     s.add_argument("--location")
     s.add_argument("--workplace")
     s.add_argument("--text-file")
+    s.add_argument("--profile")
     s.set_defaults(fn=cmd_check)
     a = p.parse_args(argv)
     setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("init", "status", "profile", "alerts", "top", "check", "export"))

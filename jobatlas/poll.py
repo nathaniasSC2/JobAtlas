@@ -52,12 +52,7 @@ def due_boards(conn, limit=None, ats=None, all_boards=False, ids=None):
 
 
 def ensure_columns(conn):
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-    if "baseline" not in cols:
-        conn.execute("ALTER TABLE jobs ADD COLUMN baseline INTEGER DEFAULT 0")
-    if "seen" not in cols:
-        conn.execute("ALTER TABLE jobs ADD COLUMN seen TEXT")
-    conn.commit()
+    db.migrate(conn)
 
 
 def store(conn, board, res, run_started, stats, partial):
@@ -68,7 +63,7 @@ def store(conn, board, res, run_started, stats, partial):
         "SELECT id, ext_id, closed_at, last_seen, detail_state, prefilter, title, location FROM jobs WHERE board_id=?", (board["id"],))}
     seen = set()
     todo = []
-    prof = score_mod.profile_mod.load()
+    profs = [s.prof for s in score_mod.profile_mod.seekers()]
     for j in res.jobs:
         ext = j["ext_id"]
         if not ext or ext in seen:
@@ -77,7 +72,7 @@ def store(conn, board, res, run_started, stats, partial):
         row = open_rows.get(ext)
         company = j.get("company") or board["company"]
         if row is None:
-            pf = score_mod.prefilter(j, prof)
+            pf = score_mod.prefilter_all(j, profs)
             cur = conn.execute(
                 "INSERT OR IGNORE INTO jobs(board_id, ats, token, ext_id, company, title, url, apply_url, location, workplace, department,"
                 " employment_type, posted_at, first_seen, last_seen, description, pay_text, questions, raw, detail_state, prefilter, baseline)"
@@ -122,7 +117,9 @@ def store(conn, board, res, run_started, stats, partial):
 
 def fast_minutes(conn, board_id, cfgp):
     """Re-check interval for a board whose re-checks are cheap: shorter the more it has fit the profile."""
-    if conn.execute("SELECT 1 FROM jobs WHERE board_id=? AND tier IN ('strong','good') LIMIT 1", (board_id,)).fetchone():
+    if conn.execute("SELECT 1 FROM jobs j WHERE board_id=? AND (tier IN ('strong','good') OR EXISTS "
+                    "(SELECT 1 FROM profile_scores ps WHERE ps.job_id=j.id AND ps.tier IN ('strong','good'))) LIMIT 1",
+                    (board_id,)).fetchone():
         return float(cfgp.get("match_interval_minutes") or 1e9)
     if conn.execute("SELECT 1 FROM jobs WHERE board_id=? AND prefilter='pass' LIMIT 1", (board_id,)).fetchone():
         return float(cfgp.get("fit_interval_minutes") or 1e9)
@@ -234,8 +231,9 @@ def verify_urls(conn, client, budget=300):
     trusted once its page loads. Hosts whose robots.txt disallows the page
     (Workday's human site) stay unverified rather than being fetched.
     """
-    rows = conn.execute("SELECT id, url, ats FROM jobs WHERE closed_at IS NULL AND tier IN ('strong','good','fair') "
-                        "AND (facts NOT LIKE '%\"verified\"%') ORDER BY score DESC LIMIT ?", (budget,)).fetchall()
+    rows = conn.execute("SELECT id, url, ats FROM jobs WHERE closed_at IS NULL AND (tier IN ('strong','good','fair') OR id IN "
+                        "(SELECT job_id FROM profile_scores WHERE tier IN ('strong','good','fair'))) "
+                        "AND (COALESCE(facts, '') NOT LIKE '%\"verified\"%') ORDER BY score DESC LIMIT ?", (budget,)).fetchall()
     out = {"checked": 0, "gone": 0, "ok": 0, "skipped": 0}
     for r in rows:
         if not r["url"] or r["ats"] in ("workday", "neogov"):
@@ -247,10 +245,13 @@ def verify_urls(conn, client, budget=300):
         facts = db.jload(row["facts"], {}) or {}
         if resp.status in (404, 410) or (resp.ok and GONE.search(resp.text[:30000]) and len(resp.text) < 60000):
             conn.execute("UPDATE jobs SET closed_at=?, tier='skip' WHERE id=?", (db.now(), r["id"]))
+            conn.execute("UPDATE profile_scores SET tier='skip' WHERE job_id=?", (r["id"],))
             out["gone"] += 1
         elif resp.ok:
             facts["verified"] = db.now()
             conn.execute("UPDATE jobs SET facts=? WHERE id=?", (db.jdump(facts), r["id"]))
+            conn.execute("UPDATE profile_scores SET facts=json_set(COALESCE(facts, '{}'), '$.verified', ?) WHERE job_id=?",
+                         (facts["verified"], r["id"]))
             out["ok"] += 1
         else:
             out["skipped"] += 1
@@ -258,8 +259,16 @@ def verify_urls(conn, client, budget=300):
     return out
 
 
+MATCH = ("strong", "good", "fair")
+
+
 def score_jobs(conn, ids=None, where=None):
-    prof = score_mod.profile_mod.load()
+    """Score jobs for the main profile (jobs.*) and each extra profile (profile_scores), then route each
+    job to one profile (jobs.routed_to): the first extra profile it fits at its claim_tier or better;
+    else the main profile if it is a match there; else the first extra profile it is a match for.
+    A job that was already sent to someone stays with them."""
+    main, *extras = score_mod.profile_mod.seekers()
+    prof = main.prof
     if ids is not None:
         rows = []
         ids = list(ids)
@@ -275,11 +284,43 @@ def score_jobs(conn, ids=None, where=None):
         old = db.jload(r["facts"], {}) or {}
         if old.get("verified"):
             a["facts"]["verified"] = old["verified"]
-        note = ledger.seen(r["company"], r["title"], [r["url"], r["apply_url"]])
+        urls = [r["url"], r["apply_url"]]
+        note = ledger.seen(r["company"], r["title"], urls, path=main.ledger)
         conn.execute("UPDATE jobs SET field=?, score=?, tier=?, reasons=?, flags=?, facts=?, scored_at=?, seen=? WHERE id=?",
                      (a["field"], a["score"], a["tier"], db.jdump(a["reasons"]), db.jdump(a["flags"]), db.jdump(a["facts"]), now,
                       note, r["id"]))
         counts[a["tier"]] = counts.get(a["tier"], 0) + 1
+        claim = fallback = None
+        for s in extras:
+            if score_mod.prefilter(job, s.prof) != "pass":
+                conn.execute("DELETE FROM profile_scores WHERE job_id=? AND profile=?", (r["id"], s.name))
+                continue
+            b = score_mod.assess(job, s.prof, company=r["company"] or "")
+            if old.get("verified"):
+                b["facts"]["verified"] = old["verified"]
+            conn.execute("INSERT OR REPLACE INTO profile_scores(job_id, profile, field, score, tier, reasons, flags, facts, scored_at, seen)"
+                         " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                         (r["id"], s.name, b["field"], b["score"], b["tier"], db.jdump(b["reasons"]), db.jdump(b["flags"]),
+                          db.jdump(b["facts"]), now, ledger.seen(r["company"], r["title"], urls, path=s.ledger)))
+            c = counts.setdefault(s.name, {})
+            c[b["tier"]] = c.get(b["tier"], 0) + 1
+            kept = a["tier"] in MATCH and a["field"] in s.main_keeps and b["tier"] != "strong"
+            if claim is None and b["tier"] in s.claims and not kept:
+                claim = s.name
+            if fallback is None and b["tier"] in MATCH:
+                fallback = s.name
+        if extras or r["routed_to"]:
+            route = claim or (None if a["tier"] in MATCH else fallback)
+            # once a job has reached someone (an alert, or the main profile's ledger) it stays theirs:
+            # they may have applied already
+            sent = [p for (p,) in conn.execute("SELECT profile FROM alerts WHERE job_id=? AND mode='sent'", (r["id"],))]
+            if (note or main.name in sent) and a["tier"] in MATCH:
+                route = None
+            elif sent and any(s.name in sent for s in extras):
+                route = next(s.name for s in extras if s.name in sent)
+            conn.execute("UPDATE jobs SET routed_to=? WHERE id=?", (route, r["id"]))
+            if claim and a["tier"] in MATCH:
+                counts["claimed"] = counts.get("claimed", 0) + 1     # a match for main that went to someone else
     conn.commit()
     return counts
 

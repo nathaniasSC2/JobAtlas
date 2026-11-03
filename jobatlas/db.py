@@ -6,6 +6,15 @@ import threading
 
 from . import config
 
+ALERTS_TABLE = """CREATE TABLE IF NOT EXISTS alerts (
+    job_id INTEGER NOT NULL,
+    profile TEXT NOT NULL DEFAULT 'main',
+    created TEXT,
+    mode TEXT,                      -- disabled | sent | failed: ... | duplicate
+    text TEXT,
+    PRIMARY KEY (job_id, profile)
+);"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies (
     id INTEGER PRIMARY KEY,
@@ -87,6 +96,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     scored_at TEXT,
     baseline INTEGER DEFAULT 0,     -- first seen on the board's first (baseline) poll
     seen TEXT,                      -- "<feed> <date> (<how>)" when the optional ledger already has it
+    routed_to TEXT,                 -- the extra profile (config "profiles") this job goes to; NULL = the main profile's
     UNIQUE(ats, token, ext_id)
 );
 CREATE INDEX IF NOT EXISTS jobs_first_seen ON jobs(first_seen);
@@ -109,12 +119,24 @@ CREATE TABLE IF NOT EXISTS runs (
     notes TEXT
 );
 
-CREATE TABLE IF NOT EXISTS alerts (
-    job_id INTEGER PRIMARY KEY,
-    created TEXT,
-    mode TEXT,                      -- disabled | sent | failed
-    text TEXT
+""" + ALERTS_TABLE + """
+
+-- the extra profiles' scores (config "profiles"); the main profile's are the jobs.* columns.
+-- Only jobs that pass that profile's title/location prefilter get a row.
+CREATE TABLE IF NOT EXISTS profile_scores (
+    job_id INTEGER NOT NULL,
+    profile TEXT NOT NULL,
+    field TEXT,
+    score INTEGER,
+    tier TEXT,
+    reasons TEXT,
+    flags TEXT,
+    facts TEXT,
+    scored_at TEXT,
+    seen TEXT,
+    PRIMARY KEY (job_id, profile)
 );
+CREATE INDEX IF NOT EXISTS profile_scores_tier ON profile_scores(profile, tier);
 """
 
 _local = threading.local()
@@ -132,7 +154,52 @@ def connect(path=None):
     c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA busy_timeout=60000")
     c.executescript(SCHEMA)
+    migrate(c)
     return c
+
+
+def migrate(c):
+    """Bring a database made by an older version up to SCHEMA (safe to run from several processes)."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+    for col, decl in (("baseline", "INTEGER DEFAULT 0"), ("seen", "TEXT"), ("routed_to", "TEXT")):
+        if col not in cols:
+            try:
+                c.execute("ALTER TABLE jobs ADD COLUMN %s %s" % (col, decl))
+            except sqlite3.OperationalError:
+                pass        # another process added it first
+    if "profile" not in {r[1] for r in c.execute("PRAGMA table_info(alerts)")}:
+        # alerts were keyed by job alone before profiles: rebuild with (job_id, profile)
+        c.commit()
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            if "profile" not in {r[1] for r in c.execute("PRAGMA table_info(alerts)")}:
+                c.execute("ALTER TABLE alerts RENAME TO alerts_v1")
+                c.execute(ALERTS_TABLE)
+                c.execute("INSERT INTO alerts(job_id, profile, created, mode, text) SELECT job_id, ?, created, mode, text FROM alerts_v1",
+                          (config.MAIN,))
+                c.execute("DROP TABLE alerts_v1")
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    c.commit()
+
+
+SCORE_COLS = ("field", "score", "tier", "reasons", "flags", "facts", "scored_at", "seen")
+
+
+def scored(conn, profile=None):
+    """-> (sql, args): the jobs as one profile sees them, to use as `SELECT ... FROM <sql>`.
+
+    Every job goes to one profile (poll.score_jobs sets routed_to). The main profile sees
+    the jobs.* columns of jobs not routed elsewhere; an extra profile sees the jobs routed
+    to it, with its own scores from profile_scores."""
+    if not profile or profile == config.MAIN:
+        return "(SELECT * FROM jobs WHERE routed_to IS NULL OR routed_to='')", []
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(jobs)")]
+    sel = ", ".join(("ps.%s" if c in SCORE_COLS else "j.%s") % c for c in cols)
+    return ("(SELECT %s FROM jobs j JOIN profile_scores ps ON ps.job_id=j.id AND ps.profile=? WHERE j.routed_to=?)" % sel,
+            [profile, profile])
 
 
 def jdump(x):

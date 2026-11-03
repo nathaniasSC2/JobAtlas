@@ -13,5 +13,15 @@
   "quiet_start": 22,
   "quiet_end": 8,
   "tz": "America/New_York"
+ },
+ "profiles": {
+  "_about": "Optional: more people scored from the same crawl. Copy examples/profile.partner.example.json to <data>/profile-partner.json.",
+  "partner": {
+   "file": "profile-partner.json",
+   "claim_tier": "good",
+   "main_keeps_fields": ["tech_support", "it_support"],
+   "ledger": {"path": ""},
+   "alerts": {"enabled": false, "channel": "discord_webhook", "env_file": "/etc/jobatlas/partner.env", "label": "New job for you", "style": "plain"}
+  }
  }
 }

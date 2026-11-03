@@ -5,7 +5,7 @@ ADP:    token = cid. GET workforcenow.adp.com/mascsr/default/careercenter/public
         job-requisitions?cid=<cid>&lang=en_US&ccId=19000101_000001&locale=en_US&$top=200 (+ /<itemID> detail)
 Oracle: token = "<host>|<siteNumber>". GET <host>/hcmRestApi/resources/latest/recruitingCEJobRequisitions
         ?onlyData=true&finder=findReqs;siteNumber=<site>,limit=25,offset=N,keyword="..."  (keyword search, so PARTIAL;
-        the keywords are the profile's search_terms)
+        the keywords are the profiles' search_terms)
 
 Not added: UKG Ready (secure7.saashr.com) and myschooldata.net, whose robots.txt disallows all crawlers.
 """
@@ -85,7 +85,7 @@ class Oracle:
         host, site = Oracle._parts(token)
         api = "https://%s/hcmRestApi/resources/latest/recruitingCEJobRequisitions" % host
         jobs, seen, any_ok = [], set(), False
-        for term in (terms if terms is not None else profile.load().search_terms):
+        for term in (terms if terms is not None else profile.search_terms()):
             for page in range(Oracle.PAGES):
                 kw = (',keyword="%s"' % term) if term else ""
                 url = "%s?onlyData=true&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber=%s,limit=25,offset=%d%s" % (

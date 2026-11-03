@@ -15,7 +15,8 @@ Hard skips (verdict "skip"), each switchable to "flag" or "ignore" in the profil
   * quota sales titles, quota/OTE language in quota-sensitive fields;
   * security clearance; a hard degree requirement with no "or equivalent";
   * a driver's licence or own vehicle; internships and applicant pools;
-  * fields at unrelated industries (industry_skip); titles outside the profile's fields.
+  * fields at unrelated industries (industry_skip); titles outside the profile's fields;
+  * the profile's required_gaps (things the person doesn't have) on the posting's required lines.
 Strong positive: remote open only to residents of the home state (a small applicant pool).
 
 assess(job) -> {"score", "tier", "verdict", "field", "reasons", "flags", "facts"}
@@ -80,7 +81,7 @@ SALES_TITLE = re.compile(r"\b(account executive|sales (?:representative|rep|deve
                          r"outside sales|territory (?:manager|rep)|closer|appointment setter|growth (?:rep|executive)|"
                          r"partnerships? (?:manager|executive)|channel (?:sales|manager)|retail sales|sales\b|client partner|"
                          r"account director|partner manager|account manager, (?:sales|enterprise))", re.I)
-INTERN = re.compile(r"\b(intern|internship|co-op|apprentice(?:ship)?|fellowship|volunteer|unpaid)\b|^student\b|"
+INTERN = re.compile(r"\b(intern|internship|co-op|apprentice(?:ship)?|fellowship|volunteer|unpaid|praktikum|werkstudent\w*)\b|^student\b|"
                     r"\bstudent (?:worker|assistant|employee|technician|position|hourly|staff|help)\b|work[- ]study|"
                     r"vacancy pool|faculty pool|\bpool\s*-\s*\d{4}|talent (?:community|network|pool)|general application|"
                     r"expression of interest|future opportunities|open application|join our team\b(?!.*\b(?:as|-)\b)", re.I)
@@ -151,12 +152,14 @@ US_MARK = re.compile(r"(united states|\bu\.?s\.?a?\b|\bus\b|\bus-|\bamericas\b|n
 NON_US = re.compile(r"\b(canada|canadian|toronto|vancouver, bc|montreal|ontario|quebec|alberta|british columbia|"
                     r"united kingdom|\buk\b|england|london|scotland|ireland|dublin|europe|european|\beu\b|emea|apac|asia|"
                     r"latam|latin america|south america|mexico|brazil|argentina|colombia|chile|peru|costa rica|"
-                    r"germany|berlin|munich|france|paris|spain|madrid|barcelona|portugal|lisbon|italy|netherlands|amsterdam|"
+                    r"germany|berlin|munich|münchen|hamburg|frankfurt|cologne|köln|stuttgart|düsseldorf|leipzig|vienna|wien|zurich|zürich|"
+                    r"geneva|m/w/d|w/m/d|france|paris|spain|madrid|barcelona|portugal|lisbon|italy|netherlands|amsterdam|"
                     r"belgium|switzerland|austria|poland|warsaw|krakow|romania|bulgaria|serbia|croatia|greece|turkey|"
                     r"sweden|stockholm|norway|denmark|finland|estonia|lithuania|latvia|ukraine|czech|prague|hungary|"
                     r"india|bangalore|bengaluru|hyderabad|pune|chennai|mumbai|delhi|noida|gurgaon|pakistan|bangladesh|"
                     r"philippines|manila|vietnam|thailand|malaysia|indonesia|singapore|japan|tokyo|korea|seoul|china|"
-                    r"shanghai|beijing|hong kong|taiwan|australia|sydney|melbourne|new zealand|israel|tel aviv|"
+                    r"shanghai|beijing|hong kong|taiwan|australia|sydney|melbourne|brisbane|perth|new south wales|nsw|queensland|"
+                    r"tasmania|new zealand|auckland|israel|tel aviv|"
                     r"egypt|nigeria|kenya|south africa|uae|dubai|saudi|emirates|middle east|mena|dach|nordics?|benelux|anz|"
                     r"japan(?:ese)?|apj|uk&i|cee|turkey|türkiye|serbia|morocco|tunisia|ghana|rwanda|uganda|"
                     r"guatemala|honduras|el salvador|dominican|jamaica|bogota|bogotá|medellin|medellín|santo domingo|buenos aires|sao paulo|"
@@ -259,6 +262,40 @@ def degree_of(desc):
             continue
         status, line = "required", ln[:160]
     return status, line
+
+
+REQ_HEAD = re.compile(r"^\W*(?:requirements?|(?:minimum |basic |required )?qualifications|required (?:skills|experience)|"
+                      r"what you(?:'ll)? (?:need|bring)|what we(?:'re| are) looking for|must[- ]haves?|who you are|about you|"
+                      r"you (?:have|bring|are)\b|skills (?:and|&) experience|experience (?:and|&) skills)", re.I)
+PREF_HEAD = re.compile(r"^\W*(?:preferred|nice[- ]to[- ]haves?|bonus|desired|pluses|extra credit|"
+                       r"it(?:'s| is| would be) (?:a plus|great|nice) if)", re.I)
+OTHER_HEAD = re.compile(r"^\W*(?:benefits|perks|what we offer|compensation|pay|salary|about (?:us|the (?:company|team|role))|"
+                        r"responsibilities|what you(?:'ll)? do|the role|location)\b", re.I)
+REQ_WORD = re.compile(r"\b(requir\w*|must|need to|minimum|mandatory|essential)\b", re.I)
+
+
+def required_gaps(desc, prof):
+    """The profile's required_gaps that the posting REQUIRES -> [(reason, effect, line)].
+
+    A line counts when it sits under a requirements heading or says required/must itself;
+    preferred lines and nice-to-have sections never count."""
+    if not prof.required_gaps or not desc:
+        return []
+    out, done, section = [], set(), None
+    for ln in lines_of(desc):
+        if PREF_HEAD.search(ln):
+            section = "pref"
+        elif REQ_HEAD.search(ln):
+            section = "req"
+        elif len(ln) < 60 and OTHER_HEAD.search(ln):
+            section = None
+        if PREFERRED.search(ln) or (section != "req" and not REQ_WORD.search(ln)):
+            continue
+        for rx, why, effect in prof.required_gaps:
+            if why not in done and rx.search(ln):
+                done.add(why)
+                out.append((why, effect, ln[:160]))
+    return out
 
 
 def field_of(title, prof):
@@ -457,6 +494,9 @@ def assess(job, prof=None, company=""):
         field = prof.fields[0]["name"] if prof.fields else "other"
     facts["field"] = field
     lead = LEADERSHIP.search(title)
+    aimed = prof.leadership_ok is not None and bool(prof.leadership_ok.search(title))
+    if aimed:
+        lead = None     # a level this profile is aiming for
     credible = prof.credible(field)
     label = prof.label(field)
 
@@ -568,12 +608,16 @@ def assess(job, prof=None, company=""):
         rule("degree_required", "degree required with no equivalency")
     certs = sorted({m.group(1) for ln in lines_of(desc) if not PREFERRED.search(ln) and re.search(r"requir|must", ln, re.I)
                     for m in CERT_REQ.finditer(ln)})
+    gap_long = []
+    for why, effect, _ in required_gaps(desc, prof):
+        (skip if effect == "skip" else flags if effect == "flag" else gap_long).append(why)
 
     # ---- years / verdict
     req, pref = years_asked(desc)
     years = max([n for n, _ in req]) if req else None
     facts["years"] = years
-    senior = bool(SENIOR.search(title))
+    # in a title the profile aims for, "lead"/"manager" are the target level; only senior/staff/principal stretch it
+    senior = bool(re.search(r"\b(senior|sr\.?|staff|principal)\b", title, re.I) if aimed else SENIOR.search(title))
     entry = bool(ENTRY.search(desc) or ENTRY.search(title))
     if skip:
         verdict = "skip"
@@ -583,6 +627,9 @@ def assess(job, prof=None, company=""):
     elif certs:
         verdict = "long"
         reasons.append("requires " + ", ".join(certs))
+    elif gap_long:
+        verdict = "long"
+        reasons.extend(gap_long)
     elif years is None:
         verdict = "strong"
         reasons.append("no years bar stated")
@@ -600,6 +647,10 @@ def assess(job, prof=None, company=""):
         if m and verdict == "strong":
             verdict = "fair"
             reasons.append("%s ('%s')" % (why, m.group(0)))
+    yearly = ptop if pk == "year" else ptop * 2080 if pk == "hour" else None
+    if prof.stretch_above_year and yearly and yearly > prof.stretch_above_year and verdict == "strong":
+        verdict = "fair"
+        reasons.append("pay tops out at %s: the band suggests a more senior role" % ptxt)
     if lead and verdict in ("strong", "fair"):
         # leadership titles: a stretch in fields with many credible years, a long shot elsewhere
         verdict = "fair" if credible >= prof.leadership_stretch_years else "long"
@@ -620,6 +671,9 @@ def assess(job, prof=None, company=""):
     if pk and not low:
         score += 4 if ((pk == "year" and ptop < 70000) or (pk == "hour" and ptop < 34)) else 6
         reasons.append("pay up to %s" % ptxt)
+        if prof.target_year and yearly >= prof.target_year:
+            score += prof.target_bonus
+            reasons.append("meets the $%dk pay target" % (prof.target_year // 1000))
     if health:
         score += 2
         reasons.append("health insurance stated")
@@ -694,3 +748,14 @@ def prefilter(job, prof=None):
     if not remote and not near and wp in ("onsite", "hybrid") and (job.get("location") or "").strip():
         return "onsite"
     return "pass"
+
+
+def prefilter_all(job, profs):
+    """The prefilter for several profiles: 'pass' when any of them passes, else the first one's reason."""
+    first = None
+    for p in profs:
+        r = prefilter(job, p)
+        if r == "pass":
+            return r
+        first = first or r
+    return first or "off-target"

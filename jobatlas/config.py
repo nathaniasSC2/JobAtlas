@@ -16,6 +16,8 @@ CACHE = os.path.join(DATA, "cache")
 CONFIG_FILE = os.environ.get("JOBATLAS_CONFIG", os.path.join(DATA, "config.json"))
 # Who you are and what you want: fields, location, pay, hard rules (see examples/profile.example.json).
 PROFILE_FILE = os.environ.get("JOBATLAS_PROFILE", os.path.join(DATA, "profile.json"))
+# The name of that profile when there are others (config "profiles"): `--profile main`, alerts.profile.
+MAIN = "main"
 # examples/: inside the package when pip-installed, beside it in a checkout.
 _PKG = os.path.dirname(os.path.abspath(__file__))
 EXAMPLES = os.path.join(_PKG, "examples")
@@ -95,7 +97,20 @@ DEFAULTS = {
         # read a secret under another name, to reuse an existing env file: {"JOBATLAS_DISCORD_TOKEN": "MY_BOT_TOKEN"}
         "env_keys": {},
         "chat_guid": "",                # imessage only, e.g. iMessage;-;+1...
+        "label": "JobAtlas Strong",     # first words of each message
+        "style": "full",                # full (score + the top reason) | plain (title, company, place, pay, link)
     },
+    # More people scored from the same crawl, e.g. two people in one household. Each job is
+    # scored for every profile (the main profile, profile.json, keeps the jobs.* columns) and goes
+    # to ONE of them: the first extra profile it fits at its claim_tier or better, else the main
+    # profile if it's a match there, else the first extra profile it's a match for.
+    #   "name": {"file": "profile-name.json",   # relative to the data dir
+    #            "claim_tier": "good",          # strong | good | fair: when they outrank the main profile; null = never
+    #            "main_keeps_fields": [],       # main-profile fields where they outrank it only at strong
+    #            "ledger": {"path": ""},        # their own "already seen" file
+    #            "alerts": {...},               # their own alert settings over the defaults above (off until enabled)
+    #            "export": true}                # write <data>/export/latest-<name>.json
+    "profiles": {},
 }
 
 

@@ -1,0 +1,80 @@
+{
+ "_about": "A second example job seeker in the same household as profile.example.json: client success, operations and bookkeeping, aiming a level up (office manager, team lead). Has a degree and drives. Use it as an extra profile: config.json \"profiles\": {\"partner\": {\"file\": \"profile-partner.json\", \"claim_tier\": \"good\"}}.",
+
+ "fields": {
+  "bookkeeping": {
+   "label": "Payroll, bookkeeping & AP/AR",
+   "titles": "payroll|bookkeep\\w*|accounts? (?:payable|receivable)|billing (?:specialist|coordinator)|accounting (?:assistant|specialist|coordinator|manager)",
+   "exclude": "\\b(tax|audit\\w*|medical|coding|collections?)\\b",
+   "credible_years": 4,
+   "bonus": 3
+  },
+  "client_success": {
+   "label": "Client success & onboarding",
+   "titles": "client success|customer success|onboarding (?:specialist|coordinator|manager)|implementation (?:coordinator|specialist)|client services?\\b|account coordinator",
+   "exclude": "\\b(technical|engineer\\w*|solutions?|enterprise|strategic)\\b",
+   "credible_years": 3,
+   "bonus": 5
+  },
+  "operations": {
+   "label": "Operations & office management",
+   "titles": "(?:^|\\b(?:business|customer|client|office) )operations (?:coordinator|specialist|associate|manager)|office (?:manager|administrator|coordinator)|executive assistant",
+   "exclude": "\\b(technical|it|network|security|warehouse|logistics|marketing|sales|revenue)\\b",
+   "credible_years": 5,
+   "bonus": 4
+  }
+ },
+
+ "search_terms": ["payroll", "bookkeeper", "client success", "office manager"],
+
+ "location": {
+  "home_state": "NC",
+  "local": ["Asheville", "Black Mountain", "Weaverville", "Hendersonville"],
+  "nearby": ["Brevard", "Marshall"],
+  "remote": true,
+  "local_bonus": 8,
+  "home_state_remote_bonus": 15
+ },
+
+ "pay": {"minimum_year": 55000, "minimum_hour": 26.5, "floor_year": 62000, "floor_hour": 30.0,
+         "target_year": 75000, "target_bonus": 5, "stretch_above_year": 130000},
+
+ "rules": {
+  "weekend_required": "flag",
+  "drivers_licence": "ignore",
+  "clearance": "skip",
+  "degree_required": "ignore",
+  "no_benefits": "skip",
+  "quota": "skip",
+  "engineering_titles": "skip",
+  "internships": "skip"
+ },
+
+ "exclude_titles": "\\b(nurse|teacher|attorney|paralegal|recruiter|underwriter|driver|technician|bilingual)\\b",
+
+ "required_gaps": [
+  {"regex": "\\b(?:cpa|cma)\\b", "reason": "requires a CPA/CMA licence", "effect": "long"},
+  {"regex": "\\b(?:bilingual|fluent in spanish)\\b", "reason": "requires a second language", "effect": "skip"},
+  {"regex": "\\b(?:salesforce|netsuite|adp)\\b", "reason": "names a system they haven't used (learnable)", "effect": "flag"},
+  {"regex": "\\b(?:sql|python)\\b", "reason": "asks for technical skills", "effect": "long"}
+ ],
+
+ "quota_fields": ["client_success"],
+
+ "stretch_titles": [
+  {"titles": "\\b(?:controller|accounting manager)\\b", "reason": "accounting management usually wants an accounting degree"}
+ ],
+
+ "employer_bonus": [
+  {"regex": "\\b(construction|contractors?|home services|bookkeeping (?:firm|services))\\b", "fields": [], "points": 4,
+   "reason": "construction or bookkeeping-firm employer"}
+ ],
+
+ "keywords": ["QuickBooks", "QBO", "job costing", "Google Sheets", "Excel", "small business", "reconciliation"],
+
+ "leadership": {
+  "stretch_min_years": 6,
+  "senior_stretch_below_years": 4,
+  "ok_titles": "^(?!.*\\b(?:director|vp|vice president|head of|chief|senior manager)\\b).*\\b(?:manager|team lead|lead|supervisor)\\b"
+ }
+}

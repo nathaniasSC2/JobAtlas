@@ -4,13 +4,19 @@ Read from config.PROFILE_FILE (<data>/profile.json or $JOBATLAS_PROFILE). If it
 is missing, examples/profile.example.json is used and `jobatlas status` says so.
 score.py holds the generic parsing (pay, years, degree, remote/state wording);
 everything that is a personal choice lives in the profile.
+
+More people can be scored from the same crawl: config.json "profiles" names
+their profile files (seekers() below; the main profile comes first).
 """
 import hashlib
 import json
+import logging
 import os
 import re
 
 from . import config
+
+log = logging.getLogger("jobatlas.profile")
 
 EXAMPLE = os.path.join(config.EXAMPLES, "profile.example.json")
 
@@ -97,6 +103,10 @@ class Profile:
         pay = d.get("pay") or {}
         self.min_year, self.min_hour = int(pay.get("minimum_year", 0)), float(pay.get("minimum_hour", 0))
         self.floor_year, self.floor_hour = int(pay.get("floor_year", self.min_year)), float(pay.get("floor_hour", self.min_hour))
+        # pay at or above the target earns target_bonus; a band topping out above stretch_above_year reads
+        # as a more senior role (strong -> fair). Hourly pay counts as 2080 hours a year. 0 = off.
+        self.target_year, self.target_bonus = int(pay.get("target_year", 0)), int(pay.get("target_bonus", 5))
+        self.stretch_above_year = int(pay.get("stretch_above_year", 0))
 
         self.rules = dict(DEFAULT_RULES)
         for k, v in (d.get("rules") or {}).items():
@@ -114,10 +124,16 @@ class Profile:
         # employers whose postings are always skipped (mass posters, fake listings); the reason shows in the skip
         self.blocked_employers = [(_rx(b["regex"]), b.get("reason", "blocked employer"))
                                   for b in d.get("blocked_employers") or [] if b.get("regex")]
+        # things the person doesn't have, checked against the posting's REQUIRED lines (never preferred ones):
+        # effect skip, long (a long shot) or flag
+        self.required_gaps = [(_rx(g["regex"]), g.get("reason", "required: " + g["regex"]), g.get("effect", "long"))
+                              for g in d.get("required_gaps") or [] if g.get("regex")]
         self.keywords = list(dict.fromkeys(d.get("keywords") or []))
         lead = d.get("leadership") or {}
         self.leadership_stretch_years = int(lead.get("stretch_min_years", 8))
         self.senior_stretch_below = int(lead.get("senior_stretch_below_years", 5))
+        # leadership titles this person is aiming for (e.g. office manager, team lead): scored like any other title
+        self.leadership_ok = _rx(lead.get("ok_titles"))
 
     def field(self, name):
         return self._f.get(name)
@@ -163,12 +179,86 @@ def load(force=False, path=None):
     return prof
 
 
+CLAIM_TIERS = {"strong": ("strong",), "good": ("strong", "good"), "fair": ("strong", "good", "fair")}
+
+
+class Seeker:
+    """One person scored from the shared crawl: a profile plus where their matches go."""
+
+    def __init__(self, name, prof, claim_tier=None, ledger="", alerts=None, export=True, main_keeps_fields=()):
+        self.name, self.prof = name, prof
+        self.claims = CLAIM_TIERS.get(claim_tier or "", ())   # tiers that take a job out of the main profile's feed
+        self.main_keeps = set(main_keeps_fields or ())        # main-profile fields this profile takes only at strong
+        self.ledger, self.export = ledger or "", export
+        self.alerts = alerts if alerts is not None else {}
+
+    @property
+    def main(self):
+        return self.name == config.MAIN
+
+
+_EXTRA = {}             # path -> (mtime, Profile): extra profiles reload when their file changes
+EXTRA_ERRORS = {}       # name -> why that profile was left out
+
+
+def extra_path(entry):
+    return os.path.join(config.DATA, entry.get("file") or "")
+
+
+def seekers():
+    """[main, *extras]: the main profile with config's ledger and alerts, then config "profiles" in order.
+    An extra profile that can't load is left out (and logged) so the others keep running."""
+    cfg = config.cfg()
+    out = [Seeker(config.MAIN, load(), ledger=(cfg.get("ledger") or {}).get("path") or "", alerts=cfg["alerts"])]
+    for name, e in (cfg.get("profiles") or {}).items():
+        if name.startswith("_") or name == config.MAIN:
+            continue
+        path = extra_path(e)
+        try:
+            mtime = os.path.getmtime(path)
+            if _EXTRA.get(path, (None,))[0] != mtime:
+                _EXTRA[path] = (mtime, load(path=path))
+                if not _EXTRA[path][1].src:
+                    raise ProfileError("can't read %s" % path)
+        except (OSError, ProfileError) as ex:
+            _EXTRA.pop(path, None)
+            if EXTRA_ERRORS.get(name) != str(ex):
+                log.error("profile %s left out: %s", name, ex)
+            EXTRA_ERRORS[name] = str(ex)
+            continue
+        EXTRA_ERRORS.pop(name, None)
+        out.append(Seeker(name, _EXTRA[path][1], claim_tier=e.get("claim_tier"), ledger=(e.get("ledger") or {}).get("path") or "",
+                          alerts=config._merge(config.DEFAULTS["alerts"], e.get("alerts") or {}), export=e.get("export", True),
+                          main_keeps_fields=e.get("main_keeps_fields")))
+    return out
+
+
+def seeker(name=None):
+    """One seeker by name (None = main) or a SystemExit-friendly ValueError."""
+    for s in seekers():
+        if s.name == (name or config.MAIN):
+            return s
+    raise ValueError("no profile named %r (config.json profiles: %s)" % (name, ", ".join(config.cfg().get("profiles") or {}) or "none"))
+
+
+def search_terms():
+    """Keyword searches for Workday/Oracle boards: every profile's search_terms, main first, without repeats."""
+    out = {}
+    for s in seekers():
+        for t in s.prof.search_terms:
+            out.setdefault(t.lower(), t)
+    return list(out.values())
+
+
 KEYS = {"fields", "search_terms", "location", "pay", "rules", "engineering_ok", "exclude_titles", "quota_fields",
-        "stretch_titles", "industry_skip", "employer_bonus", "blocked_employers", "keywords", "leadership"}
+        "stretch_titles", "industry_skip", "employer_bonus", "blocked_employers", "keywords", "leadership", "required_gaps"}
 FIELD_KEYS = {"label", "titles", "exclude", "exclude_unless", "credible_years", "bonus"}
-NUMBERS = {"location": {"local_bonus", "home_state_remote_bonus"}, "pay": {"minimum_year", "minimum_hour", "floor_year", "floor_hour"},
+NUMBERS = {"location": {"local_bonus", "home_state_remote_bonus"},
+           "pay": {"minimum_year", "minimum_hour", "floor_year", "floor_hour", "target_year", "target_bonus", "stretch_above_year"},
            "leadership": {"stretch_min_years", "senior_stretch_below_years"}}
 LOCATION_KEYS = {"home_state", "local", "nearby", "remote"} | NUMBERS["location"]
+SECTION_KEYS = {"pay": NUMBERS["pay"], "leadership": NUMBERS["leadership"] | {"ok_titles"}}
+GAP_EFFECTS = ("skip", "long", "flag")
 
 
 def check(d):
@@ -201,10 +291,19 @@ def check(d):
     if st and st.upper() not in US_STATES:
         out.append("location.home_state: %r is not a US state code" % st)
     for sect, keys in NUMBERS.items():
-        if sect != "location":
-            unknown(d.get(sect) or {}, keys, sect)
+        if sect in SECTION_KEYS:
+            unknown(d.get(sect) or {}, SECTION_KEYS[sect], sect)
         out.extend("%s.%s: %r is not a number" % (sect, k, v) for k, v in (d.get(sect) or {}).items()
                    if k in keys and (isinstance(v, bool) or not isinstance(v, (int, float))))
+    regex((d.get("leadership") or {}).get("ok_titles"), "leadership.ok_titles")
+    for i, g in enumerate(d.get("required_gaps") or []):
+        if not isinstance(g, dict) or not g.get("regex"):
+            out.append("required_gaps[%d]: needs a regex" % i)
+            continue
+        unknown(g, {"regex", "reason", "effect"}, "required_gaps[%d]" % i)
+        regex(g["regex"], "required_gaps[%d].regex" % i)
+        if g.get("effect", "long") not in GAP_EFFECTS:
+            out.append("required_gaps[%d].effect: %r should be %s" % (i, g["effect"], ", ".join(GAP_EFFECTS)))
     for k, v in (d.get("rules") or {}).items():
         if k.startswith("_"):
             continue
