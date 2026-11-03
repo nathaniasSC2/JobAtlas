@@ -278,7 +278,9 @@ def score_jobs(conn, ids=None, where=None):
         rows = conn.execute("SELECT * FROM jobs WHERE " + (where or "prefilter='pass' AND closed_at IS NULL")).fetchall()
     now = db.now()
     counts = {}
-    for r in rows:
+    for i, r in enumerate(rows):
+        if i and i % 200 == 0:
+            conn.commit()   # short write transactions: a full rescore must not lock out `watch` or the API
         job = dict(r)
         a = score_mod.assess(job, prof, company=r["company"] or "")
         old = db.jload(r["facts"], {}) or {}
