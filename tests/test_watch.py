@@ -1,5 +1,6 @@
 """Poll intervals, the watch loop and the alert policy, against a throwaway SQLite file."""
 import datetime as dt
+import json
 import os
 import sys
 import tempfile
@@ -73,7 +74,7 @@ class WatchTest(DBTest):
             self.assertEqual(run.call_count, 1)
 
 
-class AlertPolicyTest(DBTest):
+class AlertDBTest(DBTest):
     def setUp(self):
         super().setUp()
         self.cfg = config._merge(config.DEFAULTS, {"alerts": {"enabled": True}})
@@ -85,6 +86,8 @@ class AlertPolicyTest(DBTest):
                 mock.patch.object(alerts, "send", return_value=(True, "ok")) as send:
             return alerts.process(self.conn, db.now()), send
 
+
+class AlertPolicyTest(AlertDBTest):
     def test_defaults_send_every_strong_job_now(self):
         for i in range(7):
             self.job(self.b, tier="strong", score=86 + i, title="Support Specialist %d" % i)
@@ -119,6 +122,73 @@ class AlertPolicyTest(DBTest):
         self.assertEqual(self.process()[0]["candidates"], 0)        # not straight away
         self.conn.execute("UPDATE alerts SET created='2000-01-01T00:00:00+00:00' WHERE job_id=?", (jid,))
         self.assertEqual(self.process()[0]["sent"], 1)
+
+
+ESSAY = {"label": "Why do you want to work at Acme?", "required": True, "type": "textarea", "options": [], "description": ""}
+PICK = {"label": "Are you authorized to work in the US?", "required": True, "type": "multi_value_single_select", "options": ["Yes", "No"]}
+LINK = {"label": "LinkedIn Profile", "required": True, "type": "input_text", "options": []}
+
+
+class CardAndCatchupTest(AlertDBTest):
+    def setUp(self):
+        super().setUp()
+        self.cfg["alerts"].update(style="card", form=True, label="New jobs for Katie", channel="discord_channel")
+
+    def job_with(self, questions=None, ats="greenhouse", **kw):
+        jid = self.job(self.b, tier="strong", score=kw.pop("score", 90), **kw)
+        self.conn.execute("UPDATE jobs SET ats=?, questions=? WHERE id=?", (ats, json.dumps(questions or []), jid))
+        return jid
+
+    def test_written_questions(self):
+        self.assertEqual(alerts.written_questions([ESSAY, PICK, LINK]), [ESSAY["label"]])
+        self.assertEqual(alerts.written_questions([dict(ESSAY, required=False), PICK]), [])
+        short = {"label": "Describe a time you fixed a payroll error.", "required": True, "type": "input_text"}
+        self.assertEqual(alerts.written_questions([short, {"label": "How did you hear about us? Please explain", "type": "input_text"}]),
+                         [short["label"]])
+
+    def test_card_says_what_the_form_needs(self):
+        self.job_with([ESSAY, PICK], title="Payroll Specialist")
+        self.job_with([PICK, LINK], title="Billing Specialist")
+        self.job_with([], ats="ashby", title="Office Manager")
+        out, send = self.process()
+        msg = send.call_args[0][0]
+        self.assertEqual(out["sent"], 3)
+        self.assertTrue(msg.startswith("**New jobs for Katie** (3)"), msg)
+        self.assertIn("✍️ Written answers (1): Why do you want to work at Acme?", msg)
+        self.assertIn("✅ Quick apply: no written answers", msg)
+        self.assertIn("❔ Form not read (Ashby)", msg)
+        self.assertIn("**Payroll Specialist** · Acme · Remote - US", msg)
+
+    def test_a_message_never_cuts_a_link_off(self):
+        long_q = dict(ESSAY, label="Tell us about " + "a very long scenario " * 10)
+        for i in range(5):
+            self.job_with([long_q, long_q, long_q], title="Accounts Payable Specialist " + "x" * 120 + str(i))
+        sizes = []
+        with mock.patch.object(alerts.config, "cfg", return_value=self.cfg), \
+                mock.patch.object(alerts, "send", side_effect=lambda m, c: (sizes.append(len(m)), (True, "ok"))[1]):
+            while alerts.process(self.conn, db.now())["sent"]:
+                pass
+        self.assertGreater(len(sizes), 1)
+        self.assertTrue(all(n <= 1900 for n in sizes), sizes)
+
+    def test_turning_alerts_on_sends_what_was_only_recorded(self):
+        self.job_with([PICK])
+        self.assertEqual(self.process(enabled=False)[0]["disabled"], 1)
+        self.assertEqual(self.process(enabled=True)[0]["sent"], 1)
+        self.assertEqual(self.process()[0]["candidates"], 0)
+
+    def test_catchup_sends_the_backlog_best_first(self):
+        old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=4)).isoformat(timespec="seconds")
+        for i in range(7):
+            self.job_with([PICK], title="Bookkeeper %d" % i, score=80 + i, first_seen=old)
+        self.assertEqual(self.process()[0]["candidates"], 0)              # older than the 24 h lookback
+        cfg = dict(self.cfg["alerts"], max_per_run=3)
+        self.assertEqual(alerts.catchup(self.conn, config.MAIN, cfg, 24 * 7, dry_run=True)["candidates"], 7)
+        with mock.patch.object(alerts, "send", return_value=(True, "ok")) as send:
+            out = alerts.catchup(self.conn, config.MAIN, cfg, 24 * 7, pause=0)
+        self.assertEqual((out["sent"], out["messages"]), (7, 3))
+        self.assertIn("Bookkeeper 6", send.call_args_list[0][0][0].split("\n")[2])
+        self.assertEqual(alerts.catchup(self.conn, config.MAIN, cfg, 24 * 7, pause=0)["candidates"], 0)
 
 
 class SecretsTest(unittest.TestCase):

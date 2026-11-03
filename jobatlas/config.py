@@ -88,7 +88,8 @@ DEFAULTS = {
         "quiet_start": None,            # e.g. 22 and 8 to hold alerts overnight; None = send any time
         "quiet_end": None,
         "tz": "",                       # IANA name for quiet hours and the daily cap; empty = server local time
-        "channel": "discord_webhook",   # discord_webhook | discord_dm | imessage
+        "channel": "discord_webhook",   # discord_webhook | discord_dm | discord_channel | imessage
+        "discord_channel_id": "",       # discord_channel: the server channel the bot posts in
         # Secrets are read at send time from this env file, never stored in config.json:
         #   JOBATLAS_DISCORD_WEBHOOK                       (discord_webhook)
         #   JOBATLAS_DISCORD_TOKEN, JOBATLAS_DISCORD_USER  (discord_dm: a bot token and your user id)
@@ -99,6 +100,8 @@ DEFAULTS = {
         "chat_guid": "",                # imessage only, e.g. iMessage;-;+1...
         "label": "JobAtlas Strong",     # first words of each message
         "style": "full",                # full (score + the top reason) | plain (title, company, place, pay, link)
+                                        # | card (Discord markdown, one line per job plus the link)
+        "form": False,                  # add a line per job: written answers the form needs / quick apply / not read
     },
     # More people scored from the same crawl, e.g. two people in one household. Each job is
     # scored for every profile (the main profile, profile.json, keeps the jobs.* columns) and goes

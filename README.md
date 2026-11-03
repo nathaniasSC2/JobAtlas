@@ -127,9 +127,13 @@ jobatlas top --n 20
 
 `jobatlas --help` lists the rest (`status`, `rescore`, `check`, `serve`…).
 The API (`jobatlas serve`, read-only, binds to 127.0.0.1) serves `/latest.json`,
-`/jobs/<id>`, `/status` and `/discover`. Alerts (Discord webhook or DM, or
-iMessage) are configured in `config.json` with secrets in an env file
-([example](examples/alerts.env.example)); `jobatlas alerts test` checks the setup. `deploy/systemd/` has the `watch`
+`/jobs/<id>`, `/status` and `/discover`. Alerts (a Discord webhook, DM or server
+channel, or iMessage) are configured in `config.json` with secrets in an env file
+([example](examples/alerts.env.example)); `jobatlas alerts test` checks the setup.
+With `"style": "card", "form": true` each job gets a line on its application form:
+the written answers it needs (quoted), "quick apply", or "not read" for boards whose
+forms aren't public. `jobatlas alerts catchup --hours 336` sends the backlog once
+after you turn alerts on. `deploy/systemd/` has the `watch`
 service and the API, plus poll and discovery timers if you'd rather run hourly.
 
 Tests run offline against responses recorded from real boards:

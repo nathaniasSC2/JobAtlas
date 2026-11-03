@@ -10,6 +10,7 @@
   jobatlas status [--json]
   jobatlas profile check [--file F | --profile NAME]              validate profile.json (or an extra profile's file)
   jobatlas alerts test [--profile NAME]                           send a test message
+  jobatlas alerts catchup [--profile NAME] --hours N [--dry-run]  send what alerts would have sent over the last N hours
   jobatlas export                                                 rewrite export/latest*.json
   jobatlas top [--profile NAME] [--n 20] [--hours 72] [--fresh-days N] [--exclude-seen] [--json]
 
@@ -186,6 +187,18 @@ def cmd_alerts_test(a):
         sys.exit(1)
 
 
+def cmd_alerts_catchup(a):
+    from . import alerts
+    s = seeker_or_exit(a.profile)
+    try:
+        out = alerts.catchup(db.connect(), s.name, s.alerts, a.hours, dry_run=a.dry_run)
+    except ValueError as e:
+        sys.exit(str(e))
+    print(json.dumps(out))
+    if out["failed"]:
+        sys.exit(1)
+
+
 def cmd_export(a):
     from . import export
     print(json.dumps(export.write(db.connect())))
@@ -265,10 +278,16 @@ def main(argv=None):
     c.add_argument("--profile", help="an extra profile from config.json profiles")
     c.set_defaults(fn=cmd_profile_check)
     s = sub.add_parser("alerts", help="alert tools")
-    c = s.add_subparsers(dest="alerts_cmd", required=True).add_parser("test", help="send a test message (even with alerts off)")
+    asub = s.add_subparsers(dest="alerts_cmd", required=True)
+    c = asub.add_parser("test", help="send a test message (even with alerts off)")
     c.add_argument("--profile", help="use this profile's alert settings (default: main)")
     c.add_argument("--message", help="text to send instead of the stock test line")
     c.set_defaults(fn=cmd_alerts_test)
+    c = asub.add_parser("catchup", help="send what alerts would have sent over the last N hours (e.g. right after turning them on)")
+    c.add_argument("--profile", help="default: main")
+    c.add_argument("--hours", type=int, required=True)
+    c.add_argument("--dry-run", action="store_true", help="only count")
+    c.set_defaults(fn=cmd_alerts_catchup)
     s = sub.add_parser("export")
     s.set_defaults(fn=cmd_export)
     s = sub.add_parser("top")

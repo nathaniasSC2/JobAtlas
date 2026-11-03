@@ -9,6 +9,8 @@ alerts.env_file (KEY=value lines), never stored in the repo or config.json:
   id in JOBATLAS_DISCORD_USER or alerts.discord_user_id). REST only
   (POST /users/@me/channels, then /channels/<id>/messages); no gateway session,
   so a bot that is also connected elsewhere is untouched.
+* "discord_channel": the same bot posts in a server channel (alerts.discord_channel_id
+  or JOBATLAS_DISCORD_CHANNEL); the bot needs Send Messages there.
 * "imessage": a BlueBubbles server's REST API,
   `POST <server>/api/v1/message/text?password=<pw>` with {chatGuid, message, method}
   (BLUEBUBBLES_SERVER_URL or alerts.server_url, BLUEBUBBLES_PASSWORD, alerts.chat_guid).
@@ -24,6 +26,7 @@ import datetime as dt
 import json
 import logging
 import re
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -57,8 +60,55 @@ def secrets(cfg):
     return env
 
 
+# adapters that read the application form's own questions (the others leave `questions` empty)
+FORM_ATS = ("greenhouse", "rippling", "neogov")
+WRITTEN = re.compile(r"\b(why|describe|tell us|explain|share|what (?:excites|interests|draws|motivates|makes|would)|"
+                     r"how (?:would|do|did|have) you|walk us|example|cover letter|in your own words|elaborate|summar\w*|"
+                     r"motivat\w*|essay|in \d+ (?:words|sentences))\b", re.I)
+FACT = re.compile(r"(linkedin|website|portfolio|github|\burl\b|\bname\b|pronoun|phone|e-?mail|address|\bcity\b|\bzip\b|country|"
+                  r"located|location|how did you (?:hear|find|learn)|refer|current (?:or most recent )?(?:company|employer|title)|"
+                  r"start date|available to start|availab|notice|salary|compensation|\bpay\b|expectation|authori[sz]|sponsor|visa|"
+                  r"\bage\b|gender|race|ethnic|veteran|disabilit|hispanic|time ?zone)", re.I)
+CHOICE_TYPES = ("knockout", "boolean", "date", "input_hidden", "yes_no_scale_4")
+
+
+def written_questions(questions):
+    """The form's required questions that need a written answer: not names, links, facts, yes/no or picks."""
+    out = []
+    for q in questions or []:
+        if not isinstance(q, dict) or not q.get("required", True):
+            continue
+        label, t = (q.get("label") or "").strip(), (q.get("type") or "").lower()
+        if any(x in t for x in ("select", "radio", "checkbox")) or t in CHOICE_TYPES:
+            continue
+        if t == "input_file":
+            if re.search(r"cover letter", label, re.I):
+                out.append("Cover letter")
+            continue
+        if t in ("textarea", "long_answer") or (WRITTEN.search(label) and not FACT.search(label)):
+            out.append(label)
+    return out
+
+
+def form_line(r):
+    """One line on the application form: written answers needed, quick apply, or not read here."""
+    if r["ats"] not in FORM_ATS:
+        return "❔ Form not read (%s): check the page" % r["ats"].title()
+    written = written_questions(db.jload(r["questions"], []))
+    if not written:
+        return "✅ Quick apply: no written answers"
+    shown = "; ".join((w if len(w) <= 90 else w[:87] + "...") for w in written[:2])
+    return "✍️ Written answers (%d): %s%s" % (len(written), shown, "; ..." if len(written) > 2 else "")
+
+
+def md(s):
+    """Escape Discord markdown in a title or company name."""
+    return re.sub(r"([*_~|`>])", r"\\\1", s or "")
+
+
 def text_for(r, cfg=None):
-    """One job as a message. alerts.style "plain" drops the score and the scorer's reason."""
+    """One job as a message. alerts.style "plain" drops the score and the scorer's reason; "card" is
+    Discord markdown on one line plus the link. alerts.form adds a line about the application form."""
     cfg = cfg or {}
     facts = db.jload(r["facts"], {}) or {}
     pay = ""
@@ -66,10 +116,18 @@ def text_for(r, cfg=None):
         pay = (" $%dk" % round(facts["pay_top"] / 1000)) if facts.get("pay_kind") == "year" else (" $%.0f/hr" % facts["pay_top"])
     where = (" (%s)" % r["location"][:60]) if r["location"] else ""
     label = cfg.get("label") or "JobAtlas Strong"
-    if cfg.get("style") == "plain":
-        return ("%s: %s at %s%s%s\n%s" % (label, r["title"], r["company"], where, (", up to" + pay) if pay else "", r["url"]))[:600]
-    why = (db.jload(r["reasons"], []) or [""])[0]
-    return ("%s (%d): %s at %s%s%s. %s\n%s" % (label, r["score"], r["title"], r["company"], where, pay, why, r["url"]))[:600]
+    form = ("\n" + form_line(r)) if cfg.get("form") else ""
+    style = cfg.get("style")
+    if style == "card":
+        body = " · ".join(x for x in ("**%s**" % md(r["title"]), md(r["company"]), (r["location"] or "")[:50],
+                                      ("up to" + pay) if pay else "") if x) + form
+    elif style == "plain":
+        body = "%s: %s at %s%s%s%s" % (label, r["title"], r["company"], where, (", up to" + pay) if pay else "", form)
+    else:
+        why = (db.jload(r["reasons"], []) or [""])[0]
+        body = "%s (%d): %s at %s%s%s. %s%s" % (label, r["score"], r["title"], r["company"], where, pay, why, form)
+    url = r["url"] or ""
+    return body[:max(80, 599 - len(url))] + "\n" + url      # the link is never cut off
 
 
 DISCORD_API = "https://discord.com/api/v10"
@@ -106,6 +164,20 @@ def send_discord_dm(message, cfg):
         return False, str(e)[:200]
 
 
+def send_discord_channel(message, cfg):
+    env = secrets(cfg)
+    token = env.get("JOBATLAS_DISCORD_TOKEN", "")
+    chan = str(cfg.get("discord_channel_id") or env.get("JOBATLAS_DISCORD_CHANNEL", "")).strip()
+    if not (token and chan):
+        return False, "missing JOBATLAS_DISCORD_TOKEN (alerts.env_file) / alerts.discord_channel_id"
+    try:
+        _post(DISCORD_API + "/channels/%s/messages" % chan, {"content": discord_text(message), "allowed_mentions": {"parse": []}},
+              {"Authorization": "Bot " + token})
+        return True, "discord channel ok"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:200]
+
+
 def send_discord_webhook(message, cfg):
     hook = secrets(cfg).get("JOBATLAS_DISCORD_WEBHOOK", "")
     if not hook.startswith("https://"):
@@ -121,6 +193,8 @@ def send(message, cfg):
     ch = cfg.get("channel") or "discord_webhook"
     if ch == "discord_dm":
         return send_discord_dm(message, cfg)
+    if ch == "discord_channel":
+        return send_discord_channel(message, cfg)
     if ch == "imessage":
         return send_imessage(message, cfg)
     return send_discord_webhook(message, cfg)
@@ -161,18 +235,31 @@ def title_ok(title, pattern):
     return not (pattern and re.search(pattern, title or "", re.I))
 
 
-def batch_text(rows, cfg=None):
+def batch_text(rows, cfg=None, limit=1500):
     cfg = cfg or {}
-    if len(rows) == 1:
+    style = cfg.get("style")
+    if len(rows) == 1 and style != "card":
         return text_for(rows[0], cfg)
     label = cfg.get("label") or "JobAtlas Strong"
-    if cfg.get("style") == "plain":
+    if style == "card":
+        lines = ["**%s** (%d)" % (label, len(rows)) if len(rows) > 1 else "**%s**" % label]
+        lines += [x for r in rows for x in ("", text_for(r, cfg))]
+    elif style == "plain":
         lines = ["%s: %d new matches" % (label, len(rows))]
         lines += [x for r in rows for x in ("", text_for(r, cfg).split(": ", 1)[1])]
     else:
         lines = ["JobAtlas: %d strong new matches" % len(rows)] if label == "JobAtlas Strong" else ["%s: %d new matches" % (label, len(rows))]
         lines += [x for r in rows for x in ("", text_for(r, cfg).replace(label + " ", "", 1))]
-    return "\n".join(lines)[:1500]
+    return "\n".join(lines)[:limit]
+
+
+def fit_batch(rows, cfg):
+    """As many of rows (up to alerts.max_per_run) as fit in one message without cutting a link off."""
+    limit = 1900 if (cfg.get("channel") or "discord_webhook").startswith("discord") else 1500
+    batch = list(rows[: max(1, int(cfg.get("max_per_run") or 5))])
+    while len(batch) > 1 and len(batch_text(batch, cfg, limit=10 ** 6)) > limit:
+        batch.pop()
+    return batch, limit
 
 
 def process(conn, run_started):
@@ -189,31 +276,27 @@ def process(conn, run_started):
     return out
 
 
-def process_one(conn, name, cfg):
-    """Message about Strong jobs first seen in the last day (not already alerted or in the ledger).
+def candidates(conn, name, cfg):
+    """-> (rows, dups): jobs for this profile's alerts, best first, one per company + title (dups: the rest).
 
-    Called right after each poll cycle scores its new jobs. Policy (all optional):
-      * only score >= alerts.min_score and titles not matching alerts.skip_titles;
-      * quiet hours alerts.quiet_start..quiet_end in alerts.tz: nothing is sent or recorded,
-        so overnight finds go out on the first run after quiet hours end;
-      * at most alerts.daily_cap sent jobs per local day (0 = no cap), highest scores first,
-        and up to alerts.max_per_run jobs bundled into one message.
-    A failed send is retried after 5 minutes. With alerts.enabled false, candidates are
-    only recorded (mode "disabled"). `name` is the profile, `cfg` its alert settings.
-    """
-    now_local = local_now(cfg.get("tz") or "")
+    Jobs first seen in the last alerts.lookback_hours (24) at alerts.min_tier or better, not in the
+    ledger and not alerted yet. A job a board listed on its first (baseline) poll counts only if it was
+    posted in the last alerts.baseline_days (3). While alerts are on, jobs only recorded while they
+    were off (mode "disabled") count as not sent."""
     min_rank = {"strong": 0, "good": 1, "fair": 2}.get(cfg.get("min_tier", "strong"), 0)
     tiers = [t for t, i in (("strong", 0), ("good", 1), ("fair", 2)) if i <= min_rank]
     utc = dt.datetime.now(dt.timezone.utc)
     since = (utc - dt.timedelta(hours=int(cfg.get("lookback_hours", 24)))).isoformat(timespec="seconds")
     retry = (utc - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
+    handled = ("(mode NOT LIKE 'failed%%' AND mode<>'disabled') OR (mode LIKE 'failed%%' AND created>?)" if cfg.get("enabled")
+               else "mode NOT LIKE 'failed%%' OR created>?")
     src, args = db.scored(conn, name)
     rows = conn.execute(
         "SELECT * FROM %s WHERE first_seen>=? AND tier IN (%s) AND closed_at IS NULL AND (seen IS NULL OR seen='') "
-        "AND (baseline=0 OR posted_at>=date('now','-3 day')) "
-        "AND id NOT IN (SELECT job_id FROM alerts WHERE profile=? AND (mode NOT LIKE 'failed%%' OR created>?)) "
-        "AND score>=? ORDER BY score DESC" % (src, ",".join("?" * len(tiers))),
-        args + [since] + tiers + [name, retry, int(cfg.get("min_score") or 0)]).fetchall()
+        "AND (baseline=0 OR posted_at>=date('now',?)) "
+        "AND id NOT IN (SELECT job_id FROM alerts WHERE profile=? AND (%s)) "
+        "AND score>=? ORDER BY score DESC" % (src, ",".join("?" * len(tiers)), handled),
+        args + [since] + tiers + ["-%d day" % int(cfg.get("baseline_days", 3)), name, retry, int(cfg.get("min_score") or 0)]).fetchall()
     pat = cfg.get("skip_titles", DEFAULT_SKIP_TITLES)
     rows = [r for r in rows if title_ok(r["title"], pat)]
     # one line per company + title: the same job posted in several locations is alerted once
@@ -224,6 +307,23 @@ def process_one(conn, name, cfg):
             rows.remove(r)
             dups.setdefault(k, []).append(r)
         keys.add(k)
+    return rows, dups
+
+
+def process_one(conn, name, cfg):
+    """Message about Strong jobs first seen in the last day (not already alerted or in the ledger).
+
+    Called right after each poll cycle scores its new jobs. Policy (all optional):
+      * only score >= alerts.min_score and titles not matching alerts.skip_titles;
+      * quiet hours alerts.quiet_start..quiet_end in alerts.tz: nothing is sent or recorded,
+        so overnight finds go out on the first run after quiet hours end;
+      * at most alerts.daily_cap sent jobs per local day (0 = no cap), highest scores first,
+        and up to alerts.max_per_run jobs bundled into one message (fewer if they don't fit).
+    A failed send is retried after 5 minutes. With alerts.enabled false, candidates are
+    only recorded (mode "disabled"). `name` is the profile, `cfg` its alert settings.
+    """
+    now_local = local_now(cfg.get("tz") or "")
+    rows, dups = candidates(conn, name, cfg)
     out = {"candidates": len(rows), "sent": 0, "disabled": 0, "failed": 0, "held": 0}
     if not rows:
         return out
@@ -246,12 +346,12 @@ def process_one(conn, name, cfg):
     sent_today = conn.execute("SELECT count(*) FROM alerts WHERE profile=? AND mode='sent' AND created>=?", (name, midnight_utc)).fetchone()[0]
     cap = int(cfg.get("daily_cap") or 0)
     room = max(0, cap - sent_today) if cap else len(rows)
-    batch = rows[: min(room, max(1, int(cfg.get("max_per_run") or 5)))]
-    if not batch:
+    if not room:
         out["held"] = len(rows)
         log.info("daily cap reached%s (%d); holding %d alert(s)", who, sent_today, len(rows))
         return out
-    ok, info = send(batch_text(batch, cfg), cfg)
+    batch, limit = fit_batch(rows[:room], cfg)
+    ok, info = send(batch_text(batch, cfg, limit), cfg)
     for r in batch:
         conn.execute("INSERT OR REPLACE INTO alerts(job_id, profile, created, mode, text) VALUES (?,?,?,?,?)",
                      (r["id"], name, db.now(), "sent" if ok else "failed: " + info, text_for(r, cfg)))
@@ -262,3 +362,23 @@ def process_one(conn, name, cfg):
     out["held"] = len(rows) - len(batch)
     conn.commit()
     return out
+
+
+def catchup(conn, name, cfg, hours, dry_run=False, pause=1.5):
+    """Send everything this profile's alerts would have sent over the last `hours` (e.g. when they are first
+    turned on), best first, as many messages as it takes. Quiet hours and the daily cap don't apply.
+    -> {"candidates", "sent", "messages", "failed"}."""
+    c = dict(cfg, lookback_hours=hours, baseline_days=max(3, hours // 24), quiet_start=None, quiet_end=None, daily_cap=0)
+    out = {"candidates": len(candidates(conn, name, c)[0]), "sent": 0, "messages": 0, "failed": 0}
+    if dry_run or not out["candidates"]:
+        return out
+    if not cfg.get("enabled"):
+        raise ValueError("alerts for %s are off: set enabled first" % name)
+    while True:
+        o = process_one(conn, name, c)
+        out["sent"] += o["sent"]
+        out["messages"] += 1 if o["sent"] else 0
+        if not o["sent"] or not o["held"]:
+            out["failed"] += o["failed"]
+            return out
+        time.sleep(pause)      # Discord allows 5 messages per 5 s in a channel
