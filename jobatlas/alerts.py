@@ -110,6 +110,17 @@ def md(s):
     return re.sub(r"([*_~|`>])", r"\\\1", s or "")
 
 
+def posted_text(r, today=None):
+    """"posted 3d ago" from the board's own date, else "found 3d ago" (when JobAtlas first saw it)."""
+    day = (r["posted_at"] or "")[:10]
+    verb = "posted" if day else "found"
+    try:
+        days = ((today or dt.date.today()) - dt.date.fromisoformat(day or (r["first_seen"] or "")[:10])).days
+    except ValueError:
+        return ""
+    return "%s %s" % (verb, "today" if days <= 0 else "yesterday" if days == 1 else "%dd ago" % days)
+
+
 def text_for(r, cfg=None):
     """One job as a message. alerts.style "plain" drops the score and the scorer's reason; "card" is
     Discord markdown on one line plus the link. alerts.form adds a line about the application form."""
@@ -124,7 +135,7 @@ def text_for(r, cfg=None):
     style = cfg.get("style")
     if style == "card":
         body = " · ".join(x for x in ("**%s**" % md(r["title"]), md(r["company"]), (r["location"] or "")[:50],
-                                      ("up to" + pay) if pay else "") if x) + form
+                                      ("up to" + pay) if pay else "", posted_text(r)) if x) + form
     elif style == "plain":
         body = "%s: %s at %s%s%s%s" % (label, r["title"], r["company"], where, (", up to" + pay) if pay else "", form)
     else:
@@ -371,6 +382,7 @@ def process_one(conn, name, cfg):
 def catchup(conn, name, cfg, hours, dry_run=False, pause=1.5):
     """Send everything this profile's alerts would have sent over the last `hours` (e.g. when they are first
     turned on), best first, as many messages as it takes. Quiet hours and the daily cap don't apply.
+    Mind the volume: dozens of jobs at once read badly in a chat; `--dry-run` counts first.
     -> {"candidates", "sent", "messages", "failed"}."""
     c = dict(cfg, lookback_hours=hours, baseline_days=max(3, hours // 24), quiet_start=None, quiet_end=None, daily_cap=0)
     out = {"candidates": len(candidates(conn, name, c)[0]), "sent": 0, "messages": 0, "failed": 0}
