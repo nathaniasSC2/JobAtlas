@@ -1,0 +1,10 @@
+[Unit]
+Description=JobAtlas head-to-head every 5 minutes (alerts wait up to duel.hold_minutes for it)
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+[Unit]
+# Head-to-head for two profiles: judges jobs that fit both (a model call each),
+# then routes them by the verdict. Most runs find nothing new and make no call.
+# Run by jobatlas-duel.timer. The model command is config.json duel.command; its
+# credentials (e.g. CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY for `claude -p`)
+# come from the env file, never from config.json.
+Description=JobAtlas head-to-head (who should get a job that fits two profiles)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jobatlas
+Environment=JOBATLAS_DATA=/var/lib/jobatlas
+EnvironmentFile=-/etc/jobatlas/duel.env
+WorkingDirectory=/opt/jobatlas
+ExecStart=/opt/jobatlas/bin/jobatlas duel run
+TimeoutStartSec=45min
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=full

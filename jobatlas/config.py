@@ -102,6 +102,7 @@ DEFAULTS = {
         "style": "full",                # full (score + the top reason) | plain (title, company, place, pay, link)
                                         # | card (Discord markdown, one line per job plus the link)
         "form": False,                  # add a line per job: written answers the form needs / quick apply / not read
+        "duel_line": True,              # add the head-to-head verdict's line when the job has one (see "duel")
     },
     # More people scored from the same crawl, e.g. two people in one household. Each job is
     # scored for every profile (the main profile, profile.json, keeps the jobs.* columns) and goes
@@ -114,6 +115,31 @@ DEFAULTS = {
     #            "alerts": {...},               # their own alert settings over the defaults above (off until enabled)
     #            "export": true}                # write <data>/export/latest-<name>.json
     "profiles": {},
+    # Head-to-head (jobatlas/duel.py): a job that is a match for both the main profile and one extra
+    # profile goes to whoever a model thinks is likelier to get a phone screen. Run `jobatlas duel run`
+    # every few minutes (a timer). Off by default; with enabled false, verdicts are only recorded.
+    "duel": {
+        "enabled": False,
+        "with": "",                     # the extra profile in the duel ("" = the first one)
+        "favor": "",                    # who wins ties: "" = that extra profile, or "main"
+        "margin": 0.10,                 # the other side needs a phone-screen chance this much higher (absolute)
+        "ratio": 0,                     # ... or this many times higher (0 = off), e.g. 2 so 0.09 vs 0.03 isn't a "near tie"
+        "days": 21,                     # only jobs first seen this recently
+        "min_description": 400,         # characters of posting text needed to judge a job
+        "per_run": 6,                   # model calls per `duel run`
+        "per_day": 60,                  # model calls per local day
+        "hold_minutes": 30,             # alerts wait this long for a new contested job's verdict, then use the tier rule
+        "retry_minutes": 60,            # a failed judgment is tried again after this long
+        "timeout": 300,                 # seconds per model call
+        # Reads the prompt on stdin and prints the answer (claude's --output-format json, or bare JSON).
+        "command": ["claude", "-p", "--model", "sonnet", "--output-format", "json", "--tools", "", "--no-session-persistence"],
+        "schema_flag": "--json-schema",  # the JSON schema of the answer is passed after this flag ("" = not passed)
+        "model": "sonnet",              # recorded with each verdict; changing it re-judges
+        # Per profile name ("main" and the extra one): how the model sees that person.
+        #   {"label": "Sam", "resumes": {"General": "sam.pdf", "Ops": "sam-ops.txt"},  # .pdf needs pdftotext
+        #    "facts": ["No degree", "Remote only"], "facts_file": "sam-notes.md"}      # paths relative to the data dir
+        "candidates": {},
+    },
 }
 
 

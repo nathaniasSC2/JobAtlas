@@ -3,7 +3,7 @@ default) or a private network interface, never the open internet.
 
   GET /health
   GET /latest.json   ?hours=72&min_tier=fair&include_seen=1&limit=500&q=&profile=  (profile: an extra profile's matches)
-  GET /jobs/<id>     one job incl. description
+  GET /jobs/<id>     one job incl. description (and its head-to-head verdict, from the side it's routed to)
   GET /status        same numbers as `jobatlas status`
   GET /discover      ?company=...&title=...&website=...  (live lookup; one at a time)
 """
@@ -51,12 +51,12 @@ class Handler(BaseHTTPRequestHandler):
                                     include_seen=qs.get("include_seen", "1") != "0", limit=int(qs.get("limit", 500)), q=qs.get("q"),
                                     profile_name=name)
                 return self._send(200, {"generated": db.now(), "profile": name or config.MAIN, "count": len(rows),
-                                        "jobs": [export.row_out(r) for r in rows]})
+                                        "jobs": export.rows_out(conn, rows, name)})
             if u.path.startswith("/jobs/"):
                 r = conn.execute("SELECT * FROM jobs WHERE id=?", (u.path.rsplit("/", 1)[-1],)).fetchone()
                 if not r:
                     return self._send(404, {"error": "no such job"})
-                return self._send(200, export.row_out(r, desc_chars=20000))
+                return self._send(200, export.rows_out(conn, [r], r["routed_to"] or None, desc_chars=20000)[0])
             if u.path == "/status":
                 return self._send(200, status_mod.collect(conn))
             if u.path == "/discover":

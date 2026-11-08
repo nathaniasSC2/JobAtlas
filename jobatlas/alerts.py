@@ -32,7 +32,7 @@ import urllib.request
 import uuid
 from zoneinfo import ZoneInfo
 
-from . import __version__, config, db, profile
+from . import __version__, config, db, duel, profile
 
 log = logging.getLogger("jobatlas.alerts")
 
@@ -121,9 +121,18 @@ def posted_text(r, today=None):
     return "%s %s" % (verb, "today" if days <= 0 else "yesterday" if days == 1 else "%dd ago" % days)
 
 
+def duel_note(r):
+    """The head-to-head line candidates() attached to a row ("" when there is none)."""
+    try:
+        return r["_duel"] or ""
+    except (KeyError, IndexError):
+        return ""
+
+
 def text_for(r, cfg=None):
     """One job as a message. alerts.style "plain" drops the score and the scorer's reason; "card" is
-    Discord markdown on one line plus the link. alerts.form adds a line about the application form."""
+    Discord markdown on one line plus the link. alerts.form adds a line about the application form,
+    and a job with a head-to-head verdict gets its line (alerts.duel_line)."""
     cfg = cfg or {}
     facts = db.jload(r["facts"], {}) or {}
     pay = ""
@@ -132,6 +141,8 @@ def text_for(r, cfg=None):
     where = (" (%s)" % r["location"][:60]) if r["location"] else ""
     label = cfg.get("label") or "JobAtlas Strong"
     form = ("\n" + form_line(r)) if cfg.get("form") else ""
+    if cfg.get("duel_line", True) and duel_note(r):
+        form += "\n⚖️ " + duel_note(r)
     style = cfg.get("style")
     if style == "card":
         body = " · ".join(x for x in ("**%s**" % md(r["title"]), md(r["company"]), (r["location"] or "")[:50],
@@ -314,6 +325,12 @@ def candidates(conn, name, cfg):
         args + [since] + tiers + ["-%d day" % int(cfg.get("baseline_days", 3)), name, retry, int(cfg.get("min_score") or 0)]).fetchall()
     pat = cfg.get("skip_titles", DEFAULT_SKIP_TITLES)
     rows = [r for r in rows if title_ok(r["title"], pat)]
+    # a new job that fits both sides of the duel waits (duel.hold_minutes at most) for its verdict
+    held = duel.pending(conn)
+    if held:
+        rows = [r for r in rows if r["id"] not in held]
+    notes = duel.lookup(conn, [r["id"] for r in rows], name) if cfg.get("duel_line", True) else {}
+    rows = [dict(r, _duel=notes[r["id"]]["note"] if r["id"] in notes else "") for r in rows]
     # one line per company + title: the same job posted in several locations is alerted once
     keys, dups = set(), {}
     for r in list(rows):

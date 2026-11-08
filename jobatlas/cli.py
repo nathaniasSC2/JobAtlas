@@ -13,6 +13,9 @@
   jobatlas alerts catchup [--profile NAME] --hours N [--dry-run]  send what alerts would have sent over the last N hours
   jobatlas export                                                 rewrite export/latest*.json
   jobatlas top [--profile NAME] [--n 20] [--hours 72] [--fresh-days N] [--exclude-seen] [--json]
+  jobatlas duel run [--limit N] [--job ID] [--force]                judge jobs that fit two profiles (a model call each)
+  jobatlas duel show [--n 20] [--json]                            recent head-to-head verdicts
+  jobatlas duel prompt JOB_ID                                     what the model reads for one job
 
 --profile picks one of config.json "profiles" (default: the main profile, profile.json).
   jobatlas serve [--port 8804]
@@ -210,7 +213,7 @@ def cmd_top(a):
     seeker_or_exit(a.profile)
     rows = export.query(conn, hours=a.hours, min_tier=a.min_tier, include_seen=not a.exclude_seen, limit=a.n * 5,
                         fresh_days=a.fresh_days, profile_name=a.profile)
-    out = [export.row_out(r) for r in rows][: a.n]
+    out = export.rows_out(conn, rows[: a.n], a.profile)
     if a.json:
         print(json.dumps(out, indent=1, ensure_ascii=False))
         return
@@ -218,6 +221,58 @@ def cmd_top(a):
         print("%2d. [%s %d] %s | %s | %s | %s | %s" % (i, r["tier"], r["score"], r["company"], r["title"], r["location"][:40],
                                                       r["pay"][:40] or "pay not listed", r["url"]))
         print("      " + "; ".join(r["reasons"][:4]) + ((" | flags: " + "; ".join(r["flags"][:3])) if r["flags"] else ""))
+        if r.get("duel"):
+            print("      duel: " + r["duel"]["note"])
+
+
+def cmd_duel_run(a):
+    from . import duel
+    print(json.dumps(duel.run(db.connect(), limit=a.limit, ids=a.job or None, force=a.force)))
+
+
+def cmd_duel_show(a):
+    """Verdicts, newest first, with where the tier rule had the job and where it is routed now."""
+    from . import duel
+    conn = db.connect()
+    pr = duel.pair()
+    if not pr:
+        sys.exit("no partner profile: the duel needs config.json profiles")
+    lab = duel.labels()
+    rows = conn.execute("SELECT d.*, j.company, j.title, j.tier m_tier, ps.tier o_tier, j.routed_to FROM duels d JOIN jobs j ON j.id=d.job_id"
+                        " LEFT JOIN profile_scores ps ON ps.job_id=d.job_id AND ps.profile=d.other WHERE d.other=?"
+                        " ORDER BY d.created DESC LIMIT ?", (pr[1].name, a.n)).fetchall()
+    if a.json:
+        print(json.dumps([dict(r) for r in rows], indent=1, ensure_ascii=False, default=str))
+        return
+    print(json.dumps(duel.summary(conn)))
+    for r in rows:
+        if r["status"] != "ok":
+            print("#%d %s | %s: %s" % (r["job_id"], r["company"], r["title"], r["status"]))
+            continue
+        print("#%d %s | %s  [tiers %s/%s]" % (r["job_id"], r["company"], r["title"], r["m_tier"], r["o_tier"]))
+        print("    %s %.2f %s| %s %.2f %s-> %s (%s); was %s, now %s" % (
+            lab.get(config.MAIN), r["p_main"], ("gates %s " % json.loads(r["gates_main"])) if json.loads(r["gates_main"] or "[]") else "",
+            lab.get(r["other"]), r["p_other"], ("gates %s " % json.loads(r["gates_other"])) if json.loads(r["gates_other"] or "[]") else "",
+            lab.get(r["winner"], r["winner"]), r["why"], lab.get(r["tier_route"], r["tier_route"]),
+            lab.get(r["routed_to"] or config.MAIN, r["routed_to"] or config.MAIN)))
+        print("    %s (%s): %s" % (lab.get(config.MAIN), r["resume_main"], r["reason_main"]))
+        print("    %s (%s): %s" % (lab.get(r["other"]), r["resume_other"], r["reason_other"]))
+
+
+def cmd_duel_prompt(a):
+    """Print what the model would read for one job (no call)."""
+    from . import duel
+    conn = db.connect()
+    r = conn.execute("SELECT * FROM jobs WHERE id=?", (a.job_id,)).fetchone()
+    pr = duel.pair()
+    if not r or not pr:
+        sys.exit("no such job" if not r else "no partner profile")
+    try:
+        cm, co = duel.materials(pr[0].name), duel.materials(pr[1].name)
+    except duel.DuelError as e:
+        sys.exit(str(e))
+    order = [cm, co] if r["id"] % 2 == 0 else [co, cm]
+    print(duel.build_prompt(r, order))
 
 
 def cmd_serve(a):
@@ -288,6 +343,20 @@ def main(argv=None):
     c.add_argument("--hours", type=int, required=True)
     c.add_argument("--dry-run", action="store_true", help="only count")
     c.set_defaults(fn=cmd_alerts_catchup)
+    s = sub.add_parser("duel", help="head-to-head: who of two profiles should get a job that fits both")
+    dsub = s.add_subparsers(dest="duel_cmd", required=True)
+    c = dsub.add_parser("run", help="judge contested jobs (model calls), then route by the verdicts if duel.enabled")
+    c.add_argument("--limit", type=int, help="model calls this run (default duel.per_run)")
+    c.add_argument("--job", type=int, action="append", help="only this job id (repeatable); ignores duel.days")
+    c.add_argument("--force", action="store_true", help="judge again even if the inputs haven't changed")
+    c.set_defaults(fn=cmd_duel_run)
+    c = dsub.add_parser("show", help="recent verdicts")
+    c.add_argument("--n", type=int, default=20)
+    c.add_argument("--json", action="store_true")
+    c.set_defaults(fn=cmd_duel_show)
+    c = dsub.add_parser("prompt", help="print the model's input for one job")
+    c.add_argument("job_id", type=int)
+    c.set_defaults(fn=cmd_duel_prompt)
     s = sub.add_parser("export")
     s.set_defaults(fn=cmd_export)
     s = sub.add_parser("top")
@@ -310,7 +379,8 @@ def main(argv=None):
     s.add_argument("--profile")
     s.set_defaults(fn=cmd_check)
     a = p.parse_args(argv)
-    setup_logging("api" if a.cmd == "serve" else "jobatlas", quiet=a.cmd in ("init", "status", "profile", "alerts", "top", "check", "export"))
+    setup_logging("api" if a.cmd == "serve" else "duel" if a.cmd == "duel" else "jobatlas",
+                  quiet=a.cmd in ("init", "status", "profile", "alerts", "top", "check", "export") or (a.cmd == "duel" and a.duel_cmd != "run"))
     try:
         dispatch(a)
     except profile.ProfileError as e:

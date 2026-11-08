@@ -23,5 +23,17 @@
    "ledger": {"path": ""},
    "alerts": {"enabled": false, "channel": "discord_webhook", "env_file": "/etc/jobatlas/partner.env", "label": "New job for you", "style": "plain"}
   }
+ },
+ "duel": {
+  "_about": "Optional: a model decides who of the two gets a job that fits both (jobatlas duel run, from a timer). Off until enabled.",
+  "enabled": false,
+  "with": "partner",
+  "margin": 0.10,
+  "command": ["claude", "-p", "--model", "sonnet", "--output-format", "json", "--tools", "", "--no-session-persistence"],
+  "candidates": {
+   "main": {"label": "Sam", "resumes": {"Support": "resume-support.pdf", "Community": "resume-community.pdf"},
+            "facts": ["No bachelor's degree", "Remote, or on-site downtown only (doesn't drive)"]},
+   "partner": {"label": "Alex", "resumes": {"General": "resume-partner.pdf"}, "facts_file": "partner-notes.md"}
+  }
  }
 }

@@ -94,6 +94,43 @@ Each profile has its own export (`export/latest-partner.json`, `jobatlas top
 An extra profile never inherits the main profile's alert recipient.
 [Second example profile](examples/profile.partner.example.json).
 
+### Head-to-head: who would get the interview?
+
+Tier rules can't tell which of two people a recruiter would call back. With
+`"duel"` in `config.json`, a job that is a match for both the main profile and a
+partner (and that neither has seen yet) goes to a model instead: `jobatlas duel
+run` (a timer, every few minutes) gives it the posting next to each person's
+resumes and facts and asks it, as that employer's recruiter, for each one's
+chance of a phone screen, the hard requirements each fails, the resume each
+should send and a one-line reason, as strict JSON.
+
+```json
+"duel": {"enabled": true, "with": "partner", "favor": "partner", "margin": 0.10,
+         "command": ["claude", "-p", "--model", "sonnet", "--output-format", "json", "--tools", ""],
+         "candidates": {"main":    {"label": "Sam",  "resumes": {"Support": "sam-support.pdf", "Community": "sam-community.pdf"},
+                                    "facts": ["No degree", "Remote or downtown only (doesn't drive)"]},
+                        "partner": {"label": "Alex", "resumes": {"General": "alex.pdf"}, "facts_file": "alex-notes.md"}}}
+```
+
+- A hard gate only one of them fails (a required degree, years in a title, a
+  technical requirement, the commute, pay under their floor) decides it.
+- Otherwise the `favor` side gets the job unless the other's chance is at least
+  `margin` higher (or, with `ratio` set, that many times higher, for long shots
+  like 0.09 vs 0.03), so a near tie goes to `favor`.
+- The model is told to count only the employer's requirements as gates, never
+  a candidate's own preferences, and to ignore names, gender and age.
+- Verdicts are stored with a hash of every input, so a job is judged again only
+  when its posting, a resume or the facts change. Changing `margin` re-decides
+  stored verdicts without new calls.
+- New contested jobs wait up to `hold_minutes` for their verdict before alerts
+  go out, so they reach the right person. If the model is down or out of quota,
+  the tier rule decides, as before.
+- Exports, `top` and alert texts carry the verdict from each side ("Better for
+  you than for Sam: bachelor's degree required"). `jobatlas duel show` lists
+  them; `enabled: false` records verdicts without routing by them (a dry run).
+- Resumes can be PDF (read with `pdftotext`) or text. Email addresses and phone
+  numbers are taken out before anything is sent to the model.
+
 ## Supported hiring systems
 
 | | |

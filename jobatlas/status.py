@@ -41,7 +41,9 @@ def collect(conn):
                        "claimed_open": claimed, "ledger": ledger.source(s.ledger), "alerts_enabled": bool(s.alerts.get("enabled")),
                        "problems": profile.check_file(s.prof.src)})
     extras += [{"name": n, "error": e} for n, e in profile.EXTRA_ERRORS.items()]
-    return {"boards_by_ats": by_ats, "boards_total": sum(r["n"] for r in by_ats), "profiles": extras,
+    from . import duel
+    d = duel.summary(conn) if extras and (duel.enabled() or conn.execute("SELECT 1 FROM duels LIMIT 1").fetchone()) else None
+    return {"boards_by_ats": by_ats, "boards_total": sum(r["n"] for r in by_ats), "profiles": extras, "duel": d,
             "boards_active": sum(r["active"] or 0 for r in by_ats), "jobs": dict(j), "open_by_tier": tiers,
             "failing_boards": fails, "candidates": dict(cand), "recent_runs": runs,
             "profile": {"file": p.src or "NONE (no profile found)", "example": p.src.endswith("profile.example.json"), "hash": p.hash,
@@ -83,6 +85,13 @@ def render(s):
                     "/".join(x["claims"]) or "nothing", x["claimed_open"], x["ledger"], "ENABLED" if x["alerts_enabled"] else "disabled"))
         if x["problems"]:
             out.append("  %d profile problem(s): %s" % (len(x["problems"]), x["problems"][0]))
+    d = s.get("duel")
+    if d:
+        out.append("Duel %s vs %s: %s; margin %.2f%s, ties to %s; verdicts %s, %d failed; contested now %d; model calls today %d ($%.2f)" %
+                   (d["main"], d["other"], "ENABLED" if d["enabled"] else "recording only", d["margin"],
+                    (" or %gx" % d["ratio"]) if d["ratio"] else "", d["favor"],
+                    ", ".join("%s %d" % kv for kv in sorted(d["verdicts"].items())) or "none", d["failed"], d["contested_now"],
+                    d["calls_today"], d["cost_today_usd"]))
     if s["failing_boards"]:
         out.append("")
         out.append("Failing / blocked boards (top 25):")

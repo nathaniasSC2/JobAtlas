@@ -266,9 +266,13 @@ def score_jobs(conn, ids=None, where=None):
     """Score jobs for the main profile (jobs.*) and each extra profile (profile_scores), then route each
     job to one profile (jobs.routed_to): the first extra profile it fits at its claim_tier or better;
     else the main profile if it is a match there; else the first extra profile it is a match for.
-    A job that was already sent to someone stays with them."""
+    With the duel on, a job that is a match for both sides and has a verdict for its current text
+    goes where the verdict says (duel.py). A job that was already sent to someone stays with them."""
+    from . import duel
     main, *extras = score_mod.profile_mod.seekers()
     prof = main.prof
+    duel_pair = duel.pair([main, *extras]) if duel.enabled() else None
+    duel_with = duel_pair[1].name if duel_pair else None
     if ids is not None:
         rows = []
         ids = list(ids)
@@ -292,7 +296,7 @@ def score_jobs(conn, ids=None, where=None):
                      (a["field"], a["score"], a["tier"], db.jdump(a["reasons"]), db.jdump(a["flags"]), db.jdump(a["facts"]), now,
                       note, r["id"]))
         counts[a["tier"]] = counts.get(a["tier"], 0) + 1
-        claim = fallback = None
+        claim = fallback = duel_side = None
         for s in extras:
             if score_mod.prefilter(job, s.prof) != "pass":
                 conn.execute("DELETE FROM profile_scores WHERE job_id=? AND profile=?", (r["id"], s.name))
@@ -300,10 +304,13 @@ def score_jobs(conn, ids=None, where=None):
             b = score_mod.assess(job, s.prof, company=r["company"] or "")
             if old.get("verified"):
                 b["facts"]["verified"] = old["verified"]
+            b_seen = ledger.seen(r["company"], r["title"], urls, path=s.ledger)
             conn.execute("INSERT OR REPLACE INTO profile_scores(job_id, profile, field, score, tier, reasons, flags, facts, scored_at, seen)"
                          " VALUES (?,?,?,?,?,?,?,?,?,?)",
                          (r["id"], s.name, b["field"], b["score"], b["tier"], db.jdump(b["reasons"]), db.jdump(b["flags"]),
-                          db.jdump(b["facts"]), now, ledger.seen(r["company"], r["title"], urls, path=s.ledger)))
+                          db.jdump(b["facts"]), now, b_seen))
+            if s.name == duel_with:
+                duel_side = (b["tier"], b_seen)
             c = counts.setdefault(s.name, {})
             c[b["tier"]] = c.get(b["tier"], 0) + 1
             kept = a["tier"] in MATCH and a["field"] in s.main_keeps and b["tier"] != "strong"
@@ -315,7 +322,12 @@ def score_jobs(conn, ids=None, where=None):
             route = claim or (None if a["tier"] in MATCH else fallback)
             # once a job has reached someone (an alert, or the main profile's ledger) it stays theirs:
             # they may have applied already
-            sent = [p for (p,) in conn.execute("SELECT profile FROM alerts WHERE job_id=? AND mode='sent'", (r["id"],))]
+            reached = conn.execute("SELECT profile, mode FROM alerts WHERE job_id=? AND mode IN ('sent','duplicate')", (r["id"],)).fetchall()
+            sent = [p for p, m in reached if m == "sent"]
+            if duel_side and not reached and not note and not duel_side[1] and duel.contested_tiers(a["tier"], duel_side[0]):
+                won = duel.verdict_winner(conn, r["id"], duel_with, job)
+                if won:
+                    route = None if won == main.name else won
             if (note or main.name in sent) and a["tier"] in MATCH:
                 route = None
             elif sent and any(s.name in sent for s in extras):

@@ -137,6 +137,36 @@ CREATE TABLE IF NOT EXISTS profile_scores (
     PRIMARY KEY (job_id, profile)
 );
 CREATE INDEX IF NOT EXISTS profile_scores_tier ON profile_scores(profile, tier);
+
+-- head-to-head verdicts (jobatlas/duel.py): who of the main profile and `other` should get a contested job
+CREATE TABLE IF NOT EXISTS duels (
+    job_id INTEGER NOT NULL,
+    other TEXT NOT NULL,                -- the extra profile; the other side is the main profile
+    created TEXT,
+    status TEXT,                        -- ok | failed: <why>
+    model TEXT,
+    input_hash TEXT,                    -- posting + resumes + facts + model + prompt version: re-judged when it changes
+    posting_hash TEXT,                  -- the posting alone: a verdict routes the job only while this matches
+    tier_route TEXT,                    -- where the job was routed when it was judged
+    p_main REAL,                        -- chance of a phone screen, 0-1
+    p_other REAL,
+    gates_main TEXT,                    -- json lists of hard requirements each one fails
+    gates_other TEXT,
+    resume_main TEXT,                   -- the resume each one should send
+    resume_other TEXT,
+    reason_main TEXT,
+    reason_other TEXT,
+    summary TEXT,
+    winner TEXT,                        -- profile name
+    why TEXT,                           -- gate | chance | tie
+    applied TEXT,                       -- when this verdict last moved the job
+    cost_usd REAL,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    secs REAL,
+    raw TEXT,
+    PRIMARY KEY (job_id, other)
+);
 """
 
 _local = threading.local()

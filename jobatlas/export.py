@@ -8,6 +8,8 @@ best first. Rows already in the optional ledger are kept but marked
 
 Each extra profile (config "profiles") gets <data>/export/latest-<name>.json with
 its own scores. Each job is in one profile's file (poll.score_jobs routes it).
+A job with a head-to-head verdict (duel.py) carries it as "duel", seen from that
+profile's side ("note" is one line, e.g. "Better for you than for Sam: ...").
 """
 import datetime
 import json
@@ -19,7 +21,14 @@ FIELDS = ("id", "company", "title", "url", "apply_url", "ats", "location", "work
           "tier", "field", "department", "employment_type")
 
 
-def row_out(r, desc_chars=0):
+def rows_out(conn, rows, profile_name=None, desc_chars=0):
+    """row_out for each row, plus "duel": the head-to-head verdict as this profile sees it (when there is one)."""
+    from . import duel
+    verdicts = duel.lookup(conn, [r["id"] for r in rows], profile_name or config.MAIN)
+    return [row_out(r, desc_chars, duel=verdicts.get(r["id"])) for r in rows]
+
+
+def row_out(r, desc_chars=0, duel=None):
     facts = db.jload(r["facts"], {}) or {}
     d = {k: r[k] for k in FIELDS}
     d["direct_url"] = r["url"]
@@ -37,6 +46,8 @@ def row_out(r, desc_chars=0):
     d["already_seen"] = bool(r["seen"])
     d["seen_note"] = r["seen"] or ""
     d["baseline"] = bool(r["baseline"])
+    if duel:
+        d["duel"] = duel
     if desc_chars:
         d["description"] = (r["description"] or "")[:desc_chars]
     return d
@@ -74,7 +85,7 @@ def write_one(conn, path, profile_name=None):
     rows = query(conn, profile_name=profile_name)
     out = {"generated": db.now(), "profile": profile_name or config.MAIN, "window_hours": config.cfg()["export"]["hours"],
            "min_tier": config.cfg()["export"]["min_tier"], "count": len(rows), "not_yet_seen": sum(1 for r in rows if not r["seen"]),
-           "jobs": [row_out(r) for r in rows]}
+           "jobs": rows_out(conn, rows, profile_name)}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf8") as f:
