@@ -396,6 +396,21 @@ def process_one(conn, name, cfg):
     return out
 
 
+def mark_backlog(conn, name, ids):
+    """Record jobs as handled for this profile's alerts (mode "backlog") without sending them. For the catch-up
+    after a profile change: jobs that only now fit were not found in real time, so they shouldn't post to a
+    live channel; send them as one digest (an email) instead, if at all. Jobs already in the alerts table for
+    this profile are left as they are. -> number of jobs marked."""
+    n = 0
+    for i, jid in enumerate(ids):
+        n += conn.execute("INSERT OR IGNORE INTO alerts(job_id, profile, created, mode, text) VALUES (?,?,?,'backlog','')",
+                          (jid, name, db.now())).rowcount
+        if i % 200 == 199:
+            conn.commit()
+    conn.commit()
+    return n
+
+
 def catchup(conn, name, cfg, hours, dry_run=False, pause=1.5):
     """Send everything this profile's alerts would have sent over the last `hours` (e.g. when they are first
     turned on), best first, as many messages as it takes. Quiet hours and the daily cap don't apply.

@@ -213,6 +213,35 @@ class RoutingTest(unittest.TestCase):
             d = json.load(f)
         self.assertEqual((d["profile"], d["jobs"][0]["title"]), ("partner", "Payroll Specialist"))
 
+    def test_a_backlog_is_never_posted(self):
+        old = self.add("Payroll Specialist")
+        new = self.add("Payroll Coordinator")
+        poll.score_jobs(self.conn)
+        self.assertEqual(alerts.mark_backlog(self.conn, "partner", [old]), 1)
+        self.assertEqual(alerts.mark_backlog(self.conn, "partner", [old]), 0)
+        with mock.patch.object(alerts, "send", return_value=(True, "ok")) as send:
+            out = alerts.process(self.conn, db.now())
+        self.assertEqual(out["by_profile"]["partner"]["sent"], 1)
+        self.assertIn("Payroll Coordinator", send.call_args[0][0])
+        self.assertNotIn("Payroll Specialist", send.call_args[0][0])
+        modes = dict(self.conn.execute("SELECT job_id, mode FROM alerts WHERE profile='partner'").fetchall())
+        self.assertEqual((modes[old], modes[new]), ("backlog", "sent"))
+
+    def test_backfill_tries_new_jobs_before_failed_ones_and_rescores_them(self):
+        jid = self.add("Payroll Specialist", desc="")
+        failed = self.add("Payroll Coordinator", desc="")
+        self.conn.execute("UPDATE jobs SET detail_state='' WHERE id=?", (jid,))       # as poll.store leaves a new job
+        self.conn.execute("UPDATE jobs SET detail_state='failed', first_seen='2099-01-01T00:00:00+00:00' WHERE id=?", (failed,))
+        poll.score_jobs(self.conn)
+        self.assertIn("description not read yet", self.conn.execute("SELECT flags FROM profile_scores WHERE job_id=?", (jid,)).fetchone()[0])
+        got = []
+        with mock.patch.object(poll.adapters, "get") as get:
+            get.return_value.detail.return_value = {"description": DESC}
+            self.assertEqual(poll.backfill_details(self.conn, mock.Mock(), 1, 1, got), 1)
+        self.assertEqual(got, [jid])
+        poll.score_jobs(self.conn, ids=got)
+        self.assertEqual(self.conn.execute("SELECT tier FROM profile_scores WHERE job_id=?", (jid,)).fetchone()[0], "strong")
+
     def test_verified_pages_carry_over_to_extra_profiles(self):
         jid = self.add("Payroll Specialist")
         poll.score_jobs(self.conn)

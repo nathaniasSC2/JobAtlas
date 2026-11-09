@@ -10,7 +10,7 @@ ALERTS_TABLE = """CREATE TABLE IF NOT EXISTS alerts (
     job_id INTEGER NOT NULL,
     profile TEXT NOT NULL DEFAULT 'main',
     created TEXT,
-    mode TEXT,                      -- disabled | sent | failed: ... | duplicate
+    mode TEXT,                      -- disabled | sent | failed: ... | duplicate | backlog (never sent: alerts.mark_backlog)
     text TEXT,
     PRIMARY KEY (job_id, profile)
 );"""

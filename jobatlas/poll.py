@@ -164,8 +164,8 @@ def board_done(conn, board, res, cfgp, now_dt, stats):
             stats["deactivated"] += 1
 
 
-def fetch_details(conn, client, todo, budget, workers):
-    """todo: [(job_id, needs_fetch)] -> number fetched."""
+def fetch_details(conn, client, todo, budget, workers, fetched=None):
+    """todo: [(job_id, needs_fetch)] -> number fetched. The ids that got their detail are appended to `fetched`."""
     want = [jid for jid, need in todo if need][:budget]
     if not want:
         return 0
@@ -204,6 +204,8 @@ def fetch_details(conn, client, todo, budget, workers):
                           d.get("location") or "", d.get("workplace") or "", d.get("employment_type") or "", d.get("posted_at") or "",
                           d.get("department") or "", d.get("url") or "", d.get("apply_url") or "", db.jdump(raw), closed, jid))
             n += 1
+            if fetched is not None:
+                fetched.append(jid)
             conn.commit()  # never hold the write lock while waiting on the network
             if n % 100 == 0:
                 log.info("details: %d/%d", n, len(want))
@@ -216,12 +218,14 @@ GONE = re.compile(r"(job not found|no longer (?:available|accepting|open)|positi
                   r"this job (?:is )?(?:closed|no longer)|page not found|404 not found)", re.I)
 
 
-def backfill_details(conn, client, budget, workers):
-    """Fetch details for open prefilter-passing jobs that never got them (e.g. after an interrupted run)."""
+def backfill_details(conn, client, budget, workers, fetched=None):
+    """Fetch details for open prefilter-passing jobs that never got them (e.g. after an interrupted run, or
+    jobs that newly pass after a profile change). Never-tried jobs come before failed ones, so a board
+    whose detail calls keep failing can't take every slot. Fetched ids are appended to `fetched`."""
     rows = conn.execute("SELECT id FROM jobs WHERE closed_at IS NULL AND prefilter='pass' AND detail_state IN ('', 'failed') "
-                        "AND (description IS NULL OR description='') AND ats IN (%s) ORDER BY first_seen DESC LIMIT ?"
+                        "AND (description IS NULL OR description='') AND ats IN (%s) ORDER BY detail_state='failed', first_seen DESC LIMIT ?"
                         % ",".join("?" * len(DETAIL_ATS)), list(DETAIL_ATS) + [budget]).fetchall()
-    return fetch_details(conn, client, [(r["id"], True) for r in rows], budget, workers)
+    return fetch_details(conn, client, [(r["id"], True) for r in rows], budget, workers, fetched)
 
 
 def verify_urls(conn, client, budget=300):
@@ -389,9 +393,10 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
     budget = detail_budget if detail_budget is not None else cfgp["detail_budget"]
     stats["details"] = fetch_details(conn, client, todo_all, budget, workers)
     left = budget - stats["details"] if backfill_budget is None else min(backfill_budget, budget - stats["details"])
+    backfilled = []
     if left > 0:
-        stats["details_backfill"] = backfill_details(conn, client, left, workers)
-    ids = {jid for jid, _ in todo_all}
+        stats["details_backfill"] = backfill_details(conn, client, left, workers, backfilled)
+    ids = {jid for jid, _ in todo_all} | set(backfilled)     # a job is scored again once its text arrives
     ids |= {r[0] for r in conn.execute("SELECT id FROM jobs WHERE prefilter='pass' AND closed_at IS NULL AND scored_at IS NULL")}
     tiers = score_jobs(conn, ids=sorted(ids))
     stats["scored"] = tiers
