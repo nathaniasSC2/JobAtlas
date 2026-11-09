@@ -85,6 +85,27 @@ class LocationMisreads(unittest.TestCase):
         ok = assess(posting("eplus_remote_virginia", location="Durham, North Carolina; Herndon, Virginia; Remote - North Carolina"))
         self.assertFalse(any("tied" in s for s in ok["skips"]), ok["skips"])
 
+    def test_workday_remote_state_lists(self):
+        # real tags, once Workday's "6 Locations" was replaced by the detail's list (2026-11-08)
+        tied = score.remote_tied_states
+        self.assertEqual(tied("USA PA Remote / USA IN Remote / USA IL Remote / USA WI Remote / USA TX Remote"),
+                         {"PA", "IN", "IL", "WI", "TX"})                                       # Baker Tilly
+        self.assertEqual(tied("US - Remote, CO / US - OR, Lake Oswego"), {"CO"})               # Trimble
+        self.assertIn("WA", tied("US, CA, Santa Clara / US, NC, Remote / US, WA, Remote / US, CA, Remote"))    # Nvidia
+        self.assertIn("WA", tied("Remote - New York / Remote - Delaware / Remote - Washington / Remote - Tennessee (EST)"))
+        self.assertEqual(tied("Remote - Ontario / Remote - Alaska"), {"AK"})                  # the Canadian part doesn't count
+        self.assertEqual(tied("US - Remote, OH"), {"OH"})
+        self.assertEqual(tied("Remote - Virginia"), {"VA"})
+        for us_wide in ("New York, NY, USA / San Francisco, CA, USA / Remote, USA", "Remote - US", "Remote / Atlanta, Georgia",
+                        "Remote; Charlotte, NC preferred", "Remote, United States (Texas preferred)", "Atlanta, GA preferred, Remote",
+                        # Ashby adds the office's state; SpotMe's time zones aren't Connecticut
+                        "San Francisco, CA or Remote (USA) (California)", "Remote in the United States (California)",
+                        "Williamsburg, NY / Remote - US (New York)", "Remote (US (ET or CT))", "San Francisco, CA or Remote, US"):
+            self.assertEqual(tied(us_wide), set(), us_wide)
+        r = assess({"title": "Payroll Support Specialist", "description": FRESH,
+                    "location": "USA PA Remote / USA WI Remote / USA TX Remote"}, WA)
+        self.assertTrue(any("remote tied to PA, TX, WI" in s for s in r["skips"]), r["skips"])
+
     def test_modsquad_excludes_washington_residents(self):
         j = posting("modsquad_excludes_wa", raw={})       # the text alone, without the board's country
         self.assertSkipped(assess(j, WA), "can't hire in Washington")

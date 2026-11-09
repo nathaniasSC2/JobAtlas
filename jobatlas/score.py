@@ -535,16 +535,38 @@ def location_class(job, desc, prof=None):
 US_WIDE = re.compile(r"\b(us|usa|u\.s\.|united states|anywhere|nationwide|americas|north america)\b", re.I)
 
 
+# Workday's compact remote tags: country, state code, "Remote" ("USA PA Remote", "US - Remote, CO", "US, NC, Remote")
+WD_STATE_TAG = re.compile(r"^\s*(?:US|USA)\s*[-,]?\s*(?:Remote\s*[-,]?\s*)?([A-Z]{2})\s*(?:[-,]?\s*Remote)?\s*$")
+TZ_PAREN = re.compile(r"\([^()]*\b(?:ET|PT|EST|CST|MST|PST|EDT|CDT|PDT|time ?zones?)\b[^()]*\)", re.I)
+
+
 def remote_tied_states(loc):
-    """States a location tag ties its remote part to: "Durham, North Carolina; Herndon, Virginia; Remote - Virginia"
-    -> {"VA"} (remote only for Virginians; the others are offices). Empty when any remote part is US-wide or
-    names no single state."""
+    """States a location tag ties its remote parts to -> set. "Durham, North Carolina; Herndon, Virginia; Remote -
+    Virginia" -> {"VA"} (remote only for Virginians; the others are offices); "USA PA Remote / USA WI Remote /
+    USA TX Remote" -> {"PA", "WI", "TX"}. Empty when any remote part is US-wide ("Remote", "Remote - US", and
+    Ashby's "Remote (USA) (California)", whose state is just the office's) or names several states or a
+    preference. Remote parts abroad ("Remote - Ontario") are left out."""
     segs = [x.strip() for x in re.split(r"\s*[;|/\n]\s*", loc or "") if x.strip()]
-    rsegs = [x for x in segs if re.search(r"\bremote\b|telework|work from home", x, re.I)]
-    if not rsegs or any(US_WIDE.search(x) for x in rsegs):
-        return set()
-    tied = [states_in(x) for x in rsegs]
-    return set().union(*tied) if all(len(t) == 1 for t in tied) else set()
+    rsegs = [TZ_PAREN.sub(" ", x) for x in segs if re.search(r"\bremote\b|telework|work from home", x, re.I)]
+    tied = set()
+    for x in rsegs:
+        if re.search(r"prefer", x, re.I):
+            return set()
+        wd = WD_STATE_TAG.match(x)
+        if wd:
+            sts = {wd.group(1)} if wd.group(1) in ABBR else set()
+        elif US_WIDE.search(x):
+            return set()
+        else:
+            sts = states_in(x)
+        if not sts:
+            if NON_US.search(x) or ISO3_REMOTE.search(x):
+                continue
+            return set()
+        if len(sts) > 1:
+            return set()
+        tied |= sts
+    return tied
 
 
 def questions_of(job):
