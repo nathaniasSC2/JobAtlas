@@ -103,6 +103,9 @@ DEFAULTS = {
                                         # | card (Discord markdown, one line per job plus the link)
         "form": False,                  # add a line per job: written answers the form needs / quick apply / not read
         "duel_line": True,              # add the head-to-head verdict's line when the job has one (see "duel")
+        # Which resume to send, per profile field, e.g. {"it_support": "Support", "community": "Community"}: adds
+        # "Send the Support resume" to each job (the head-to-head's pick wins when there is one). {} = no line.
+        "resume_by_field": {},
     },
     # More people scored from the same crawl, e.g. two people in one household. Each job is
     # scored for every profile (the main profile, profile.json, keeps the jobs.* columns) and goes

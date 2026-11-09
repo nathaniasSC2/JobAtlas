@@ -573,12 +573,14 @@ def view(d, viewer, lab=None):
         note = "Better for %s: you'd fail %s" % (L[t], "; ".join(g[y][:2]))
     else:
         note = "Better for %s: %s" % (L[t], score)
+    line = note
     n_resumes = len(((settings().get("candidates") or {}).get(you) or {}).get("resumes") or {})
     if resume[y] and n_resumes > 1:
         note += "; send the %s resume" % resume[y]
     return {"winner": lab.get(d["winner"], d["winner"]), "you": L[y], "them": L[t], "p_you": p[y], "p_them": p[t],
             "gates_you": g[y], "gates_them": g[t], "resume": resume[y], "reason": reason[y], "their_reason": reason[t],
-            "why": d["why"], "summary": d["summary"] or "", "model": d["model"] or "", "judged": d["created"], "note": note}
+            "why": d["why"], "summary": d["summary"] or "", "model": d["model"] or "", "judged": d["created"], "note": note,
+            "line": line}
 
 
 def lookup(conn, ids, viewer):

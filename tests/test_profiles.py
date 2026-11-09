@@ -278,6 +278,21 @@ class TextTest(unittest.TestCase):
                          "New job for you: Payroll Specialist at Acme (Remote - US), up to $82k\nhttps://x/1")
         self.assertEqual(alerts.text_for(self.ROW), "JobAtlas Strong (90): Payroll Specialist at Acme (Remote - US) $82k. asks 2+ yrs\nhttps://x/1")
 
+    def test_good_jobs_are_called_good_and_say_which_resume(self):
+        cfg = {"resume_by_field": {"tech_support": "Support", "implementation": "Success"}}
+        good = dict(self.ROW, tier="good", score=76, field="tech_support")
+        self.assertEqual(alerts.text_for(good, cfg),
+                         "JobAtlas Good (76): Payroll Specialist at Acme (Remote - US) $82k. asks 2+ yrs\n📄 Send the Support resume\nhttps://x/1")
+        duel_pick = dict(good, field="implementation", _resume="Community", _duel="Better for you than for Alex: Sam 0.40 vs Alex 0.20")
+        self.assertIn("📄 Send the Community resume\n⚖️ Better for you than for Alex", alerts.text_for(duel_pick, cfg))
+        self.assertNotIn("📄", alerts.text_for(dict(good, field="other"), cfg))
+        self.assertNotIn("📄", alerts.text_for(good))
+        strong = dict(self.ROW, tier="strong", field="implementation", url="https://x/2")
+        msg = alerts.batch_text([strong, good], cfg)
+        self.assertTrue(msg.startswith("JobAtlas: 2 new matches (1 strong, 1 good)\n\n(90): Payroll"), msg)
+        self.assertIn("\n\n(76): Payroll", msg)
+        self.assertTrue(alerts.batch_text([strong, dict(strong, url="https://x/3")], cfg).startswith("JobAtlas: 2 strong new matches"))
+
 
 class LedgerReloadTest(unittest.TestCase):
     def test_ledger_reloads_when_its_file_changes(self):

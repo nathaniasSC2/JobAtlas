@@ -121,26 +121,52 @@ def posted_text(r, today=None):
     return "%s %s" % (verb, "today" if days <= 0 else "yesterday" if days == 1 else "%dd ago" % days)
 
 
-def duel_note(r):
-    """The head-to-head line candidates() attached to a row ("" when there is none)."""
+def _col(r, k):
     try:
-        return r["_duel"] or ""
+        return r[k] or ""
     except (KeyError, IndexError):
         return ""
+
+
+def duel_note(r):
+    """The head-to-head line candidates() attached to a row ("" when there is none)."""
+    return _col(r, "_duel")
+
+
+def resume_for(r, cfg):
+    """The resume to send: the head-to-head's pick when there is one, else alerts.resume_by_field for the job's
+    field. "" when alerts.resume_by_field isn't set (one resume, or no advice wanted)."""
+    by_field = cfg.get("resume_by_field") or {}
+    if not by_field:
+        return ""
+    return _col(r, "_resume") or by_field.get(_col(r, "field"), "")
+
+
+DEFAULT_LABEL = "JobAtlas Strong"
+
+
+def label_for(r, cfg):
+    """alerts.label; with the default label, a job below strong is called by its own tier ("JobAtlas Good")."""
+    label = cfg.get("label") or DEFAULT_LABEL
+    tier = _col(r, "tier")
+    return "JobAtlas " + tier.title() if label == DEFAULT_LABEL and tier and tier != "strong" else label
 
 
 def text_for(r, cfg=None):
     """One job as a message. alerts.style "plain" drops the score and the scorer's reason; "card" is
     Discord markdown on one line plus the link. alerts.form adds a line about the application form,
-    and a job with a head-to-head verdict gets its line (alerts.duel_line)."""
+    a job with a head-to-head verdict gets its line (alerts.duel_line), and alerts.resume_by_field
+    adds which resume to send."""
     cfg = cfg or {}
     facts = db.jload(r["facts"], {}) or {}
     pay = ""
     if facts.get("pay_top"):
         pay = (" $%dk" % round(facts["pay_top"] / 1000)) if facts.get("pay_kind") == "year" else (" $%.0f/hr" % facts["pay_top"])
     where = (" (%s)" % r["location"][:60]) if r["location"] else ""
-    label = cfg.get("label") or "JobAtlas Strong"
+    label = label_for(r, cfg)
     form = ("\n" + form_line(r)) if cfg.get("form") else ""
+    if resume_for(r, cfg):
+        form += "\n📄 Send the %s resume" % resume_for(r, cfg)
     if cfg.get("duel_line", True) and duel_note(r):
         form += "\n⚖️ " + duel_note(r)
     style = cfg.get("style")
@@ -274,8 +300,13 @@ def batch_text(rows, cfg=None, limit=1500):
         lines = ["%s: %d new matches" % (label, len(rows))]
         lines += [x for r in rows for x in ("", text_for(r, cfg).split(": ", 1)[1])]
     else:
-        lines = ["JobAtlas: %d strong new matches" % len(rows)] if label == "JobAtlas Strong" else ["%s: %d new matches" % (label, len(rows))]
-        lines += [x for r in rows for x in ("", text_for(r, cfg).replace(label + " ", "", 1))]
+        if label == DEFAULT_LABEL:
+            tiers = [_col(r, "tier") or "strong" for r in rows]
+            kinds = ", ".join("%d %s" % (tiers.count(t), t) for t in ("strong", "good", "fair") if t in tiers)
+            lines = ["JobAtlas: %d strong new matches" % len(rows)] if set(tiers) == {"strong"} else ["JobAtlas: %d new matches (%s)" % (len(rows), kinds)]
+        else:
+            lines = ["%s: %d new matches" % (label, len(rows))]
+        lines += [x for r in rows for x in ("", text_for(r, cfg).replace(label_for(r, cfg) + " ", "", 1))]
     return "\n".join(lines)[:limit]
 
 
@@ -329,8 +360,9 @@ def candidates(conn, name, cfg):
     held = duel.pending(conn)
     if held:
         rows = [r for r in rows if r["id"] not in held]
-    notes = duel.lookup(conn, [r["id"] for r in rows], name) if cfg.get("duel_line", True) else {}
-    rows = [dict(r, _duel=notes[r["id"]]["note"] if r["id"] in notes else "") for r in rows]
+    notes = duel.lookup(conn, [r["id"] for r in rows], name)
+    rows = [dict(r, _duel=notes[r["id"]]["line"] if r["id"] in notes else "", _resume=(notes.get(r["id"]) or {}).get("resume") or "")
+            for r in rows]
     # one line per company + title: the same job posted in several locations is alerted once
     keys, dups = set(), {}
     for r in list(rows):
