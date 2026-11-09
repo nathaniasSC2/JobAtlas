@@ -4,17 +4,20 @@ The tier rules in poll.score_jobs send each job to one person. A job that is a m
 main profile and the duel partner (duel.with, default: the first extra profile) is *contested*:
 open, a match for both (fair or better, at least one of them good or better), first seen within
 duel.days, with its full text read, and not yet sent to or seen by either of them (ledgers and
-alerts). For those, `jobatlas duel run` gives a model (duel.command, e.g. `claude -p`) the posting
-next to each person's resumes and facts and asks it, as the employer's recruiter, for each one's
-chance of a phone screen (0-1), the hard gates each fails, the resume each should send and a
-one-line reason, as strict JSON.
+alerts). For those, `jobatlas duel run` gives a model (duel.command, e.g. `claude -p`) the posting,
+with the questions its application form asks (form_lines; once the form has been read), next to
+each person's resumes and facts and asks it, as the employer's recruiter, for each one's chance of
+a phone screen (0-1), the hard gates each fails, the resume each should send and a one-line
+reason, as strict JSON.
 
 The rule (decide): a hard gate that one of them fails and the other passes decides it. Otherwise
 duel.favor (default: the partner) gets the job unless the other's chance is higher by at least
 duel.margin (0.10), so a tie or near-tie goes to the favoured side.
 
-Verdicts are stored in the duels table with a hash of every input (posting, resumes, facts,
-model, prompt), so a job is judged again only when one of them changes.
+Verdicts are stored in the duels table with a hash of every input (posting, form questions,
+resumes, facts, model, prompt), so a job is judged again only when one of them changes. A form
+read after the verdict asks for a new one, but the verdict keeps routing the job until then: it
+applies while the posting text (posting_hash) is the one judged.
 
 duel.enabled false: verdicts are only recorded, nothing is routed by them (a dry run; see
 `jobatlas duel show`). Enabled:
@@ -33,7 +36,7 @@ import re
 import subprocess
 import time
 
-from . import config, db, ledger, profile
+from . import config, db, ledger, profile, score
 
 log = logging.getLogger("jobatlas.duel")
 
@@ -92,6 +95,51 @@ def sha(*parts):
 def posting_hash(job):
     """The posting as the model reads it. A verdict applies only while this matches."""
     return sha(*[_get(job, k) for k in ("company", "title", "location", "workplace", "pay_text", "description")])
+
+
+FORM_MAX = 6000         # characters of form questions in the prompt
+# fields every Workable form has, the applicant's own particulars, how they found the job, mailing-list opt-ins:
+# nothing about the job
+FORM_SKIP = re.compile(r"^(?:headline|summary|education|experience|photo|(?:current|most recent) (?:job )?(?:company|employer|title|location)\??|"
+                       r"location \(city\)|(?:what is your )?(?:full |home |mailing )?address\??)$|"
+                       r"how you (?:found|heard|learned)|found this (?:job|position|role)|\bsign up\b|unsubscribe|newsletter|"
+                       r"talent (?:community|network|pool)", re.I)
+ANSWERS = {"boolean": "yes/no", "knockout": "yes/no", "multi_value_single_select": "pick one", "multi_value_multi_select": "pick any",
+           "input_file": "file upload", "textarea": "long answer", "input_text": "short answer", "date": "date", "group": "fields"}
+
+
+def form_lines(job):
+    """The application form's questions as the model reads them, one line each: the question, whether it must be
+    answered, the kind of answer and its choices, the employer's note on it. The where-did-you-hear, EEO and
+    contact fields are left out (score.form_questions), and so is a form never read. [] when nothing is left."""
+    out, size = [], 0
+    qs = [q for q in score.form_questions(job if isinstance(job, dict) else dict(job))
+          if not (FORM_SKIP.search(_norm(q["label"])) or q.get("kind") == "location")]
+    for i, q in enumerate(qs):
+        opts = [_norm(o) for o in q.get("options") or [] if _norm(o)]
+        kind = ANSWERS.get(q.get("type") or "", "")
+        if opts and all(score.YES_NO.match(o) for o in opts):
+            kind, opts = "yes/no", []
+        if opts:
+            cut = q["truncated"] if q.get("truncated") is not None else len(opts) >= 12
+            kind = (kind if kind in ("pick any", "fields") else "pick one") + ": " + " / ".join(opts) + (" / ..." if cut else "")
+        req = q.get("required")
+        tags = "; ".join(t for t in ("required" if req else "optional" if req is not None else "", kind) if t)
+        note = _norm(q.get("description"))
+        line = "- " + _norm(q["label"]) + (" [%s]" % tags if tags else "") + ((" Note: " + note[:300]) if note else "")
+        if size + len(line) + 1 > FORM_MAX:
+            out.append("- [... %d more questions cut]" % (len(qs) - i))
+            break
+        out.append(line)
+        size += len(line) + 1
+    return out
+
+
+def form_hash(job):
+    """The form questions as the model reads them, or "" without any (the input hash is then as it was before
+    forms were read, so a verdict on a job with no form stands)."""
+    lines = form_lines(job)
+    return sha(*lines) if lines else ""
 
 
 # ---------------------------------------------------------------- inputs
@@ -179,6 +227,12 @@ def build_prompt(job, cands, today=None):
                "Employment type: " + (_get(job, "employment_type") or "not stated"),
                "Posted: " + (_get(job, "posted_at")[:10] or "not stated"),
                "", "Description:", desc[:16000] + ("\n[... cut]" if len(desc) > 16000 else "")]
+    form = form_lines(job)
+    if form:
+        posting += ["", "Application form: the employer's questions for everyone who applies, besides name, contact details "
+                    "and resume. \"required\" means the applicant must answer it, not that the answer must be yes. A question "
+                    "about a credential, experience, location or schedule shows what the employer screens on: weigh it as you "
+                    "would the same point in the description."] + form
     parts = [head, "", "\n".join(posting)]
     for c in cands:
         block = ["", "=== CANDIDATE: %s ===" % c["label"]]
@@ -474,7 +528,8 @@ def todo(conn, main, other, cm, co, ids=None, force=False):
     retry = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=float(s.get("retry_minutes", 60)))).isoformat(timespec="seconds")
     out = []
     for r in contested(conn, other.name, ids=ids, since="" if ids else None):
-        ih = sha(base, posting_hash(r))
+        fh = form_hash(r)
+        ih = sha(base, posting_hash(r), fh) if fh else sha(base, posting_hash(r))
         d = have.get(r["id"])
         if d and not force and d["input_hash"] == ih and (d["status"] == "ok" or d["created"] > retry):
             continue        # current, or failed recently

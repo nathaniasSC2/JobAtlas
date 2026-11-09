@@ -11,7 +11,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
-from jobatlas import alerts, browser as browser_mod, db, poll, profile, score  # noqa: E402
+from jobatlas import alerts, browser as browser_mod, db, duel, poll, profile, score  # noqa: E402
 from jobatlas.adapters import ashby, workable, workday  # noqa: E402
 from jobatlas.net import Response  # noqa: E402
 
@@ -96,6 +96,11 @@ class WorkableForms(unittest.TestCase):
         hours = next(q for q in d["questions"] if "Pacific or Mountain" in q["label"])
         self.assertEqual(hours["type"], "boolean")
         self.assertTrue(all(q["truncated"] is False for q in d["questions"]))
+        # "multiple" fields are radio buttons with singleOption true, checkboxes with it false
+        kinds = [(q["label"].split()[:3], q["type"]) for q in d["questions"] if q["kind"] == "multiple"]
+        self.assertEqual(kinds, [(["Which", "best", "describes"], "multi_value_single_select"),
+                                 (["What", "is", "your"], "multi_value_single_select"),
+                                 (["What", "is", "your"], "multi_value_multi_select")])
 
     def test_the_visitors_location_prefill_is_not_kept(self):
         d, _ = self.read("workable_cnc")
@@ -459,6 +464,53 @@ class BrowserClient(unittest.TestCase):
         with self.assertRaises(browser_mod.BrowserError) as e:
             b.read("https://homedepot.wd5.myworkdayjobs.com/CareerDepot/job/x/apply/applyManually", "1")
         self.assertIn("robots", str(e.exception))
+
+
+# ----------------------------------------------------------------------------------- the head-to-head prompt
+class FormInTheDuelPrompt(unittest.TestCase):
+    """What the head-to-head model reads of a real form: the employer's questions, not the standard fields."""
+
+    def test_1password(self):
+        fx = FORMS["ashby_1password"]
+        d = ashby.form(None, "x", fx["job"], browser=FakeBrowser({fx["job"]["url"] + "/application": fx["page"]}))
+        lines = duel.form_lines({"questions": d["questions"]})
+        self.assertEqual(len(lines), 11)                    # of 35 fields
+        self.assertIn("- Do you have experience in cybersecurity SaaS? [required; yes/no]", lines)
+        self.assertIn("- Size of company you have worked for most recently [required; pick one: >100 / 101-999 / 1000-2499 / "
+                      "2500-4999 / 5000+]", lines)
+        self.assertIn("- Why 1Password? [required; long answer] Note: There are a lot of great companies out there. "
+                      "What makes you excited to work at 1Password?", lines)
+        text = "\n".join(lines)
+        for left_out in ("What brought you", "found this job", "Pronouns", "Gender", "Current Location", "Current job title",
+                         "LinkedIn", "Resume", "sign up"):
+            self.assertNotIn(left_out, text)
+
+    def test_workable_radio_buttons_and_checkboxes(self):
+        fx = FORMS["workable_better_impact"]
+        d = workable.form(FakeHTTP({"https://apply.workable.com/": (200, fx["body"])}), "x", {"ext_id": fx["ext_id"]})
+        lines = duel.form_lines({"questions": d["questions"]})
+        self.assertEqual(lines[0], "- In which country are you currently located and authorized to work? "
+                                   "[required; pick one: United States / Canada / Neither]")
+        self.assertTrue(lines[2].startswith("- Which best describes your experience with Better Impact software? [required; pick one: "))
+        self.assertTrue(lines[4].startswith("- What is your experience with software implementation or customer onboarding? "
+                                            "[required; pick any: "))
+        self.assertEqual(len(lines), 5)
+        cnc = FORMS["workable_cnc"]
+        d = workable.form(FakeHTTP({"https://apply.workable.com/": (200, cnc["body"])}), "x", {"ext_id": cnc["ext_id"]})
+        self.assertEqual(duel.form_lines({"questions": d["questions"]}),
+                         ["- What are your salary expectations for this role? [required; short answer]"])   # no Photo, Education...
+
+    def test_no_form_no_lines(self):
+        self.assertEqual(duel.form_lines({"questions": "[]"}), [])
+        self.assertEqual(duel.form_hash({"questions": None}), "")
+        noise = [{"label": "How did you hear about us?", "options": ["LinkedIn", "Discord"]}, {"label": "Resume", "type": "input_file"}]
+        self.assertEqual(duel.form_hash({"questions": noise}), "")
+
+    def test_a_long_form_is_cut(self):
+        qs = [{"label": "Question %d about the work %s" % (i, "x" * 200), "required": True, "type": "textarea"} for i in range(60)]
+        lines = duel.form_lines({"questions": qs})
+        self.assertEqual(lines[-1], "- [... %d more questions cut]" % (60 - len(lines) + 1))
+        self.assertLessEqual(sum(len(x) + 1 for x in lines[:-1]), duel.FORM_MAX)
 
 
 if __name__ == "__main__":

@@ -108,10 +108,11 @@ An extra profile never inherits the main profile's alert recipient.
 Tier rules can't tell which of two people a recruiter would call back. With
 `"duel"` in `config.json`, a job that is a match for both the main profile and a
 partner (and that neither has seen yet) goes to a model instead: `jobatlas duel
-run` (a timer, every few minutes) gives it the posting next to each person's
-resumes and facts and asks it, as that employer's recruiter, for each one's
-chance of a phone screen, the hard requirements each fails, the resume each
-should send and a one-line reason, as strict JSON.
+run` (a timer, every few minutes) gives it the posting, with the questions its
+application form asks, next to each person's resumes and facts and asks it, as
+that employer's recruiter, for each one's chance of a phone screen, the hard
+requirements each fails, the resume each should send and a one-line reason, as
+strict JSON.
 
 ```json
 "duel": {"enabled": true, "with": "partner", "favor": "partner", "margin": 0.10,
@@ -128,9 +129,13 @@ should send and a one-line reason, as strict JSON.
   like 0.09 vs 0.03), so a near tie goes to `favor`.
 - The model is told to count only the employer's requirements as gates, never
   a candidate's own preferences, and to ignore names, gender and age.
+- The form questions leave out where-did-you-hear, the EEO survey and contact
+  fields. Each says whether it must be answered and lists its choices ("Are you
+  legally authorized to work in the US? [required; yes/no]").
 - Verdicts are stored with a hash of every input, so a job is judged again only
-  when its posting, a resume or the facts change. Changing `margin` re-decides
-  stored verdicts without new calls.
+  when its posting, its form questions, a resume or the facts change. A form
+  read after the verdict gets a new one; the old verdict routes the job
+  meanwhile. Changing `margin` re-decides stored verdicts without new calls.
 - New contested jobs wait up to `hold_minutes` for their verdict before alerts
   go out, so they reach the right person. If the model is down or out of quota,
   the tier rule decides, as before.

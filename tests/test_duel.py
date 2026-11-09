@@ -242,6 +242,51 @@ class DuelRoutingTest(unittest.TestCase):
         os.utime(path, (later, later))
         self.assertEqual(duel.run(self.conn)["judged"], 1)
 
+    FORM = [{"label": "Are you legally authorized to work in the US?", "type": "multi_value_single_select", "required": True,
+             "options": ["Yes", "No"]},
+            {"label": "How many years have you run customer onboarding?", "type": "multi_value_single_select", "required": True,
+             "options": ["0-1", "2-4", "5+"]},
+            {"label": "Why Acme?", "type": "textarea", "required": False, "description": "A few sentences."},
+            {"label": "How did you hear about us?", "type": "multi_value_single_select", "options": ["LinkedIn", "Discord"]},
+            {"label": "Gender", "type": "multi_value_single_select", "options": ["Woman", "Man"], "section": "Voluntary Self-Identification"}]
+
+    def set_form(self, jid, questions):
+        self.conn.execute("UPDATE jobs SET questions=? WHERE id=?", (json.dumps(questions), jid))
+        self.conn.commit()
+
+    def test_the_form_questions_are_part_of_the_posting(self):
+        jid = self.add("Onboarding Specialist")
+        self.set_form(jid, self.FORM)
+        r = self.conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        p = duel.build_prompt(r, [duel.materials("main"), duel.materials("partner")])
+        posting = p[p.index("=== THE POSTING ==="):p.index("=== CANDIDATE")]
+        self.assertIn("Application form: the employer's questions for everyone who applies", posting)
+        self.assertIn("\"required\" means the applicant must answer it, not that the answer must be yes", posting)
+        self.assertIn("- Are you legally authorized to work in the US? [required; yes/no]\n"
+                      "- How many years have you run customer onboarding? [required; pick one: 0-1 / 2-4 / 5+]\n"
+                      "- Why Acme? [optional; long answer] Note: A few sentences.\n", posting)
+        for left_out in ("Discord", "Gender"):
+            self.assertNotIn(left_out, p)
+        self.set_form(jid, [])
+        r = self.conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        self.assertNotIn("Application form", duel.build_prompt(r, [duel.materials("main"), duel.materials("partner")]))
+
+    def test_a_form_read_after_the_verdict_asks_for_a_new_one(self):
+        jid = self.add("Onboarding Specialist")
+        poll.score_jobs(self.conn)
+        duel.run(self.conn)
+        self.assertIsNone(self.route(jid))                  # Sam 0.6 vs Alex 0.3
+        self.set_form(jid, self.FORM[3:])                   # only where-did-you-hear and the EEO survey: nothing new
+        self.assertEqual(duel.run(self.conn)["judged"], 0)
+        self.set_form(jid, self.FORM)
+        poll.score_jobs(self.conn)
+        self.assertIsNone(self.route(jid))                  # the verdict routes the job until the new one
+        self.answer({"*": {"Sam": [0.2, []], "Alex": [0.5, []]}})
+        out = duel.run(self.conn)
+        self.assertEqual((out["judged"], out["rerouted"]), (1, 1))
+        self.assertEqual((self.route(jid), self.verdict(jid)["winner"]), ("partner", "partner"))
+        self.assertEqual(duel.run(self.conn)["judged"], 0)
+
     def test_contact_details_stay_out_of_the_prompt(self):
         jid = self.add("Onboarding Specialist")
         r = self.conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()

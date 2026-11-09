@@ -81,8 +81,9 @@ def questions_from(form):
             else:
                 opts = [str(o.get("value") or o.get("name") or "") if isinstance(o, dict) else str(o) for o in f.get("options") or []]
             qt = FIELD_TYPES.get(t, "input_text")
-            if t == "dropdown" and f.get("singleOption") is False:
-                qt = "multi_value_multi_select"
+            if t in ("dropdown", "multiple") and isinstance(f.get("singleOption"), bool):
+                # "multiple" with singleOption is a set of radio buttons: one answer
+                qt = "multi_value_single_select" if f["singleOption"] else "multi_value_multi_select"
             out.append({"label": label, "required": bool(f.get("required")), "type": qt, "kind": t, "options": opts,
                         "truncated": False, "description": " ".join(html_text(str(f.get("helper") or "")).split()),
                         "section": sec.get("name") or "", "id": f.get("id") or ""})

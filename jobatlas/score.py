@@ -741,16 +741,17 @@ FORM_NOISE = re.compile(r"how did you (?:hear|find|learn)|what brought you|where
 FORM_NOISE_SECTION = re.compile(r"demographic|voluntary|self[- ]identif|eeo|equal (?:employment|opportunity)|diversity", re.I)
 
 
+def form_questions(job):
+    """The employer's own questions on the application form: questions_of() without the FORM_NOISE ones."""
+    return [q for q in questions_of(job) if not FORM_NOISE.search(" ".join(q["label"].split()))
+            and not FORM_NOISE_SECTION.search(str(q.get("section") or ""))]
+
+
 def form_text(job):
     """The employer's own questions on the application form as text (labels, descriptions, options), for the
     keyword match: "Do you have experience with Docker and Linux?" says as much about the job as its posting."""
-    out = []
-    for q in questions_of(job):
-        label = " ".join(q["label"].split())
-        if FORM_NOISE.search(label) or FORM_NOISE_SECTION.search(str(q.get("section") or "")):
-            continue
-        out.append(" ".join([label, str(q.get("description") or "")] + [str(o) for o in q.get("options") or []]))
-    return "\n".join(out)
+    return "\n".join(" ".join([" ".join(q["label"].split()), str(q.get("description") or "")] + [str(o) for o in q.get("options") or []])
+                     for q in form_questions(job))
 
 
 # a form question that asks for the applicant's own number, with a sample figure ("desired salary? (i.e. $50000)")
