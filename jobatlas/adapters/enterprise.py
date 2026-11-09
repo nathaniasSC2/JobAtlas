@@ -111,12 +111,28 @@ class Oracle:
                     break
         return Result("ok", jobs, url=Oracle.public_url(token))
 
+    # The detail resource's finder is "ById" on current releases (both live tenants, 2026-11-08: "ByReqNumber"
+    # answered 400 "finder ... is not valid" for every job); older releases may only know "ByReqNumber".
+    FINDERS = ("ById", "ByReqNumber")
+    _finder = {}        # host -> the finder that worked there
+
+    @staticmethod
+    def detail_url(host, site, ext_id, finder):
+        return ("https://%s/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails?expand=all&onlyData=true"
+                "&finder=%s;Id=%%22%s%%22,siteNumber=%s" % (host, finder, ext_id, site))
+
     @staticmethod
     def detail(client, token, job):
         host, site = Oracle._parts(token)
-        url = ("https://%s/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails?expand=all&onlyData=true"
-               "&finder=ByReqNumber;Id=%%22%s%%22,siteNumber=%s" % (host, job["ext_id"], site))
-        r = client.get(url)
+        known = Oracle._finder.get(host)
+        r = None
+        for finder in ([known] if known else []) + [f for f in Oracle.FINDERS if f != known]:
+            r = client.get(Oracle.detail_url(host, site, job["ext_id"], finder))
+            if r.ok:
+                Oracle._finder[host] = finder
+                break
+            if r.status != 400:     # 400 = this finder isn't valid here: try the next one
+                break
         if not r.ok:
             return {"_detail_error": "HTTP %s" % r.status}
         items = (r.json() or {}).get("items") or []

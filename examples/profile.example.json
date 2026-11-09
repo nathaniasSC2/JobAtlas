@@ -23,8 +23,8 @@
   "it_support": {
    "label": "IT support & administration",
    "titles": "\\bit\\b|i\\.t\\.|information technology|help ?desk|service desk|desktop|system(?:s)? admin|sysadmin|network admin|\\bnoc\\b|technician|endpoint|computer support|\\bmsp\\b",
-   "exclude": "\\b(field|inventory|warehouse|logistics|install(?:ation|er)?|cna|patient care|nursing|medical|surgical|lab(?:oratory)?|pharmacy|veterinary|dental|maintenance|facilities|hvac|electrical|mechanical|automotive|aviation|solar|cable|fiber|utility|water|manufacturing|quality|research|food|museum|library|theat(?:er|re)|lighting)\\b[\\w ,/&-]{0,25}\\btechnicians?\\b",
-   "exclude_unless": "\\b(it|computer|desktop|help ?desk|service desk|network|systems)\\b",
+   "exclude": "\\b(field|inventory|warehouse|logistics|install(?:ation|er)?|cna|patient care|nursing|medical|surgical|lab(?:oratory)?|pharmacy|veterinary|dental|maintenance|facilities|hvac|electrical|mechanical|automotive|aviation|solar|cable|fiber|utility|water|manufacturing|quality|research|food|museum|library|theat(?:er|re)|lighting|ecg|ekg|eeg|electrocardiograph\\w*|cardi\\w*|telemetry|phlebotom\\w*|clinical|patient|sterile|imaging|dialysis|respiratory)\\b[\\w ,/&()-]{0,30}\\btechnicians?\\b|\\btechnicians?\\b[\\w ,/&()-]{0,40}\\b(medical|cardi\\w*|hospital|clinic\\w*|health|patient|telemetry|surgical|lab|pharmacy|veterinary|dental|imaging|maintenance|facilities|hvac)\\b",
+   "exclude_unless": "\\b(it|computer|desktop|help ?desk|service desk|network|systems|technology)\\b",
    "credible_years": 4,
    "bonus": 5
   },

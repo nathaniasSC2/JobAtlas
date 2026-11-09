@@ -88,7 +88,9 @@ def store(conn, board, res, run_started, stats, partial):
         else:
             sets = "last_seen=?, closed_at=NULL"
             args = [now]
-            if row["title"] != j["title"] or (j.get("location") and row["location"] != j.get("location")):
+            # Workday lists say "3 Locations"; the detail call stored the real list, so keep it
+            if row["title"] != j["title"] or (j.get("location") and row["location"] != j.get("location")
+                                              and not MANY_LOCATIONS.match(j["location"])):
                 sets += ", title=?, location=?"
                 args += [j["title"], j.get("location") or row["location"]]
             if j.get("description") and not j.get("needs_detail"):
@@ -100,8 +102,8 @@ def store(conn, board, res, run_started, stats, partial):
             conn.execute("UPDATE jobs SET %s WHERE id=?" % sets, args + [row["id"]])
             if row["closed_at"]:
                 stats["reopened"] += 1
-            if row["prefilter"] == "pass" and row["detail_state"] in ("", "failed") and j.get("needs_detail"):
-                todo.append((row["id"], True))
+            if row["prefilter"] == "pass" and row["detail_state"] == "" and j.get("needs_detail"):
+                todo.append((row["id"], True))      # failed ones are retried by backfill_details, spaced out
     # closures
     if partial:
         cutoff = _iso(_utcnow() - datetime.timedelta(days=5))
@@ -164,6 +166,24 @@ def board_done(conn, board, res, cfgp, now_dt, stats):
             stats["deactivated"] += 1
 
 
+MANY_LOCATIONS = re.compile(r"^\s*\d+ locations\s*$", re.I)
+DETAIL_TRIES = 5            # failed detail calls before a job is left as detail_state 'gave_up'
+DETAIL_RETRY_HOURS = 1      # a failed one is tried again no sooner than this
+
+
+def detail_failed(conn, row, why):
+    """Count a failed detail call in the job's raw (_detail_fails, _detail_failed_at, _detail_error); after
+    DETAIL_TRIES it is 'gave_up' and never fetched again (it is still scored on its list data)."""
+    raw = db.jload(row["raw"], {}) or {}
+    raw["_detail_fails"] = int(raw.get("_detail_fails") or 0) + 1
+    raw["_detail_failed_at"] = db.now()
+    raw["_detail_error"] = str(why or "empty answer")[:160]
+    state = "gave_up" if raw["_detail_fails"] >= DETAIL_TRIES else "failed"
+    conn.execute("UPDATE jobs SET detail_state=?, raw=? WHERE id=?", (state, db.jdump(raw), row["id"]))
+    conn.commit()
+    return state
+
+
 def fetch_details(conn, client, todo, budget, workers, fetched=None):
     """todo: [(job_id, needs_fetch)] -> number fetched. The ids that got their detail are appended to `fetched`."""
     want = [jid for jid, need in todo if need][:budget]
@@ -186,8 +206,7 @@ def fetch_details(conn, client, todo, budget, workers, fetched=None):
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
         for jid, d in ex.map(one, want):
             if not d or d.get("_detail_error"):
-                conn.execute("UPDATE jobs SET detail_state='failed' WHERE id=?", (jid,))
-                conn.commit()
+                detail_failed(conn, rows[jid], (d or {}).get("_detail_error"))
                 continue
             r = rows[jid]
             raw = db.jload(r["raw"], {})
@@ -221,10 +240,13 @@ GONE = re.compile(r"(job not found|no longer (?:available|accepting|open)|positi
 def backfill_details(conn, client, budget, workers, fetched=None):
     """Fetch details for open prefilter-passing jobs that never got them (e.g. after an interrupted run, or
     jobs that newly pass after a profile change). Never-tried jobs come before failed ones, so a board
-    whose detail calls keep failing can't take every slot. Fetched ids are appended to `fetched`."""
+    whose detail calls keep failing can't take every slot; a failed one waits DETAIL_RETRY_HOURS between
+    tries and is given up after DETAIL_TRIES. Fetched ids are appended to `fetched`."""
+    cutoff = _iso(_utcnow() - datetime.timedelta(hours=DETAIL_RETRY_HOURS))
     rows = conn.execute("SELECT id FROM jobs WHERE closed_at IS NULL AND prefilter='pass' AND detail_state IN ('', 'failed') "
+                        "AND (detail_state='' OR COALESCE(json_extract(raw, '$._detail_failed_at'), '') < ?) "
                         "AND (description IS NULL OR description='') AND ats IN (%s) ORDER BY detail_state='failed', first_seen DESC LIMIT ?"
-                        % ",".join("?" * len(DETAIL_ATS)), list(DETAIL_ATS) + [budget]).fetchall()
+                        % ",".join("?" * len(DETAIL_ATS)), [cutoff] + list(DETAIL_ATS) + [budget]).fetchall()
     return fetch_details(conn, client, [(r["id"], True) for r in rows], budget, workers, fetched)
 
 
@@ -264,6 +286,42 @@ def verify_urls(conn, client, budget=300):
 
 
 MATCH = ("strong", "good", "fair")
+FORM_ATS = ("lever",)       # adapters whose form is read from its own page (adapter.form), for matches only
+FORM_TRIES = 3
+
+
+def read_forms(conn, client, budget=20):
+    """Read the application form of open matches on ATSes whose questions aren't in the job data (Lever's
+    /apply page): the questions can rule a job out ("must live near Dallas", a set $18/hr rate). Each job's
+    form is read once (raw._form_read); a page that is gone closes the job. -> ids whose questions changed."""
+    if budget <= 0:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM jobs WHERE closed_at IS NULL AND ats IN (%s) AND (tier IN ('strong','good','fair') OR id IN "
+        "(SELECT job_id FROM profile_scores WHERE tier IN ('strong','good','fair'))) AND json_extract(raw, '$._form_read') IS NULL "
+        "AND COALESCE(json_extract(raw, '$._form_fails'), 0) < ? ORDER BY first_seen DESC LIMIT ?"
+        % ",".join("?" * len(FORM_ATS)), list(FORM_ATS) + [FORM_TRIES, budget]).fetchall()
+    changed = []
+    for r in rows:
+        a = adapters.get(r["ats"])
+        raw = db.jload(r["raw"], {}) or {}
+        try:
+            d = a.form(client, r["token"], {"url": r["url"], "ext_id": r["ext_id"]})
+        except Exception as e:  # noqa: BLE001
+            d = {"_detail_error": "%s: %s" % (type(e).__name__, e)}
+        if d.get("_closed"):
+            conn.execute("UPDATE jobs SET closed_at=? WHERE id=?", (db.now(), r["id"]))
+        elif d.get("_detail_error"):
+            raw["_form_fails"] = int(raw.get("_form_fails") or 0) + 1
+            raw["_form_error"] = d["_detail_error"][:160]
+            conn.execute("UPDATE jobs SET raw=? WHERE id=?", (db.jdump(raw), r["id"]))
+        else:
+            raw["_form_read"] = db.now()
+            conn.execute("UPDATE jobs SET questions=?, raw=? WHERE id=?", (db.jdump(d.get("questions") or []), db.jdump(raw), r["id"]))
+            changed.append(r["id"])
+        conn.commit()
+    return changed
+
 
 
 def score_jobs(conn, ids=None, where=None):
@@ -400,6 +458,10 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
     ids |= {r[0] for r in conn.execute("SELECT id FROM jobs WHERE prefilter='pass' AND closed_at IS NULL AND scored_at IS NULL")}
     tiers = score_jobs(conn, ids=sorted(ids))
     stats["scored"] = tiers
+    formed = read_forms(conn, client, cfgp.get("form_budget", 20))
+    if formed:      # before the alerts: a form question can rule a new match out
+        stats["forms"] = len(formed)
+        score_jobs(conn, ids=formed)
     stats["verified"] = verify_urls(conn, client, verify_budget)
     new_matches = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE first_seen=? AND tier IN ('strong','good','fair') AND (baseline=0 OR posted_at>=?)",

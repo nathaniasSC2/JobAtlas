@@ -143,7 +143,12 @@ def cmd_rescore(a):
         pf = score.prefilter_all(dict(r), profs)
         if pf != r["prefilter"]:
             conn.execute("UPDATE jobs SET prefilter=?, tier=CASE WHEN ?='pass' THEN tier ELSE NULL END WHERE id=?", (pf, pf, r["id"]))
+            if pf != "pass":    # out for everyone: drop the extra profiles' old scores and routing too
+                conn.execute("DELETE FROM profile_scores WHERE job_id=?", (r["id"],))
+                conn.execute("UPDATE jobs SET routed_to=NULL WHERE id=?", (r["id"],))
             changed += 1
+            if changed % 200 == 0:
+                conn.commit()
     conn.commit()
     print(json.dumps({"prefilter_changed": changed}))
     print(json.dumps(poll.score_jobs(conn), indent=1))

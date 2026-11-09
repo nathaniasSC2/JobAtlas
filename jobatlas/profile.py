@@ -134,6 +134,10 @@ class Profile:
         self.senior_stretch_below = int(lead.get("senior_stretch_below_years", 5))
         # leadership titles this person is aiming for (e.g. office manager, team lead): scored like any other title
         self.leadership_ok = _rx(lead.get("ok_titles"))
+        # a posting up longer than stale_days is at most fair; longer than skip_days it is skipped (0 = off)
+        fresh = d.get("freshness") or {}
+        self.stale_days = int(fresh.get("stale_days", 120))
+        self.skip_days = int(fresh.get("skip_days", 365))
 
     def field(self, name):
         return self._f.get(name)
@@ -251,13 +255,15 @@ def search_terms():
 
 
 KEYS = {"fields", "search_terms", "location", "pay", "rules", "engineering_ok", "exclude_titles", "quota_fields",
-        "stretch_titles", "industry_skip", "employer_bonus", "blocked_employers", "keywords", "leadership", "required_gaps"}
+        "stretch_titles", "industry_skip", "employer_bonus", "blocked_employers", "keywords", "leadership", "required_gaps",
+        "freshness"}
 FIELD_KEYS = {"label", "titles", "exclude", "exclude_unless", "credible_years", "bonus"}
 NUMBERS = {"location": {"local_bonus", "home_state_remote_bonus"},
            "pay": {"minimum_year", "minimum_hour", "floor_year", "floor_hour", "target_year", "target_bonus", "stretch_above_year"},
-           "leadership": {"stretch_min_years", "senior_stretch_below_years"}}
+           "leadership": {"stretch_min_years", "senior_stretch_below_years"},
+           "freshness": {"stale_days", "skip_days"}}
 LOCATION_KEYS = {"home_state", "local", "nearby", "remote"} | NUMBERS["location"]
-SECTION_KEYS = {"pay": NUMBERS["pay"], "leadership": NUMBERS["leadership"] | {"ok_titles"}}
+SECTION_KEYS = {"pay": NUMBERS["pay"], "leadership": NUMBERS["leadership"] | {"ok_titles"}, "freshness": NUMBERS["freshness"]}
 GAP_EFFECTS = ("skip", "long", "flag")
 
 

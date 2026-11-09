@@ -48,7 +48,12 @@ flowchart LR
 
 The code reads the posting itself: the pay range in free text, years asked vs.
 preferred, degree wording, remote/hybrid/on-site *as written* (not just the tag),
-state hiring lists, weekend shifts, quota pay. What you want lives in a JSON
+state hiring lists, weekend shifts, quota pay. It also reads the board's own country
+for the job, Workday's telework tags ("No Telework" is on-site), and the application
+form's questions: a remote job whose form asks you to live near an office elsewhere,
+work on-site, or live in a list of states without yours is skipped. A posting up for
+over 120 days is at most fair, and over a year it's skipped (`freshness` in the
+profile; a job that newly appears on a board counts from then). What you want lives in a JSON
 profile ([example](examples/profile.example.json)), and each hard rule can be
 `skip`, `flag` or `ignore`. `jobatlas profile check` catches typos in it.
 
@@ -169,7 +174,8 @@ channel, or iMessage) are configured in `config.json` with secrets in an env fil
 ([example](examples/alerts.env.example)); `jobatlas alerts test` checks the setup.
 With `"style": "card", "form": true` each job gets a line on its application form:
 the written answers it needs (quoted), "quick apply", or "not read" for boards whose
-forms aren't public. `jobatlas alerts catchup --hours 336` sends the backlog once
+forms aren't public. Greenhouse, Rippling and NEOGOV forms come with the job's
+detail; Lever's are read from the public `/apply` page, for matches only. `jobatlas alerts catchup --hours 336` sends the backlog once
 after you turn alerts on. `deploy/systemd/` has the `watch`
 service and the API, plus poll and discovery timers if you'd rather run hourly.
 

@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     pay_text TEXT,
     questions TEXT,                 -- json list of the form's custom questions
     raw TEXT,                       -- json of the list item (+ detail)
-    detail_state TEXT,              -- '' | fetched | skipped | failed
+    detail_state TEXT,              -- '' | fetched | skipped | failed (retried hourly) | gave_up (after poll.DETAIL_TRIES)
     prefilter TEXT,                 -- pass | off-target | non-us | ...
     field TEXT,
     score INTEGER,

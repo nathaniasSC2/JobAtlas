@@ -7,8 +7,14 @@ home location, pay floor, which hard rules apply) comes from the profile
 (profile.py, examples/profile.example.json).
 
 Hard skips (verdict "skip"), each switchable to "flag" or "ignore" in the profile:
-  * not remote-US and not local (on-site/hybrid elsewhere, non-US remote);
-  * remote limited to states that exclude the home state, or "must reside in <other state>";
+  * not remote-US and not local (on-site/hybrid elsewhere, non-US remote). The ATS's own country
+    (Lever, Workday, Ashby, Oracle) counts, and so do workplace tags like "No Telework";
+  * remote limited to states that exclude the home state, or "must reside in <other state>",
+    "excludes residents of ...", or a location tag whose only remote part is one other state;
+  * the application form's required questions: "must live near <other place>", on-site/in-office
+    days, a state list without the home state (these come from the form, not the posting);
+  * a posting older than freshness.skip_days (365), except a local one; older than freshness.stale_days
+    (120) it is at most fair. A job that appeared later on a board we were already watching counts from then;
   * pay clearly under the minimum; under the floor only with health insurance;
     a stated "no benefits";
   * required weekend shifts or weekend on-call (unclear wording -> flag);
@@ -23,6 +29,7 @@ assess(job) -> {"score", "tier", "verdict", "field", "reasons", "flags", "facts"
 tier: strong >= 85, good >= 72, fair >= 58, long below, skip on any hard skip.
 """
 import datetime
+import json
 import re
 
 from . import profile as profile_mod
@@ -67,8 +74,16 @@ REMOTE_TEXT = re.compile(r"(fully remote|100% remote|remote[- ]first|remote[- ]f
                          r"work from home|work-from-home|remote within the (?:us|united states)|remote,? us\b|"
                          r"telework|telecommut|distributed team|work remotely)", re.I)
 REMOTE_NEG = re.compile(r"(?:not (?:be )?(?:eligible|available|approved) for (?:full[- ]time |any )?(?:remote|telework)(?: work)?|(?:remote|telework)(?: work)? (?:is|are) not (?:available|an option|permitted|offered|eligible)|no (?:remote|telework)(?: work)?(?: options?)?\b|not a remote (?:role|position|job)|is not remote|cannot be (?:performed|done|worked) remotely|not (?:a )?(?:remote|telework)[- ]eligible)", re.I)
-ONSITE_TEXT = re.compile(r"(on-?site (?:role|position|requirement|\d|in)|in[- ]office (?:\d|role|position|requirement)|"
+# remote wording that is only a perk of an office job ("work from anywhere for up to 4 weeks per year")
+REMOTE_LIMITED = re.compile(r"(?:work|working) (?:from anywhere|remotely|from home) (?:for )?up to (?:\d+|one|two|three|four) (?:days?|weeks?)|"
+                            r"occasional(?:ly)? (?:remote|telework)(?: work)?|option (?:for|of|to) (?:occasional |some )?(?:remote|telework)|"
+                            r"flexibility to work (?:from anywhere|remotely) for", re.I)
+ONSITE_TEXT = re.compile(r"(on-?site (?:role|position|requirement|\d|in)|in[- ]office (?:\d|role|position|requirement|on a hybrid)|"
                          r"\d\s*(?:days?|x) (?:a|per) week (?:in|at) (?:the|our) office|hybrid (?:role|position|schedule|work)|"
+                         r"(?:predominantly|primarily|mostly) (?:on-?site|in[- ]person|in[- ]office|in the office)|"
+                         r"(?:work|be|working) (?:in|from) (?:the|our|an?) (?:\w+ )?office (?:at least )?(?:\d|one|two|three|four|five) days|"
+                         r"(?:\d|one|two|three|four|five) days (?:a|per|each) week (?:in|at|from) (?:the|our|an?|one of our) (?:\w+ )?(?:office|hub|campus)|"
+                         r"#(?:li-)?(?:hybrid|onsite)\b|"
                          r"must (?:be able to )?commute|commut(?:e|ing) distance|relocat(?:e|ion) (?:is )?required|"
                          r"report(?:s|ing)? (?:in person )?to (?:our|the) office|this (?:role|position) is (?:based )?(?:in|on-?site))", re.I)
 SENIOR = re.compile(r"\b(senior|sr\.?|lead|principal|staff|head|director|vp|vice president|chief|expert|manager ii+)\b", re.I)
@@ -164,7 +179,21 @@ NON_US = re.compile(r"\b(canada|canadian|toronto|vancouver, bc|montreal|ontario|
                     r"japan(?:ese)?|apj|uk&i|cee|turkey|türkiye|serbia|morocco|tunisia|ghana|rwanda|uganda|"
                     r"guatemala|honduras|el salvador|dominican|jamaica|bogota|bogotá|medellin|medellín|santo domingo|buenos aires|sao paulo|"
                     r"são paulo|lima|santiago|montevideo|quito|panama|cdmx|guadalajara|monterrey|manila|cebu|cairo|lagos|"
-                    r"nairobi|karachi|lahore|kyiv|lviv|bucharest|sofia|belgrade|zagreb|tallinn|vilnius|riga)\b", re.I)
+                    r"nairobi|karachi|lahore|kyiv|lviv|bucharest|sofia|belgrade|zagreb|tallinn|vilnius|riga|"
+                    r"russia|russian federation|moscow|saint petersburg|st\.? petersburg|belarus|minsk|kazakhstan|almaty|astana|"
+                    r"uzbekistan|tashkent|kyrgyzstan|azerbaijan|baku|armenia|yerevan|tbilisi|cyprus|limassol|nicosia|malta|"
+                    r"luxembourg|iceland|slovenia|ljubljana|slovakia|bratislava|bosnia|sarajevo|montenegro|north macedonia|skopje|"
+                    r"albania|tirana|moldova|chisinau|copenhagen|aarhus|odense|porto|coimbra|nepal|kathmandu|sri lanka|colombo|"
+                    r"myanmar|yangon|cambodia|phnom penh|laos|mongolia|jakarta|surabaya|bandung|kuala lumpur|taipei|kaohsiung|"
+                    r"ho chi minh|hanoi|bangkok|karnataka|telangana|maharashtra|tamil nadu|kerala|"
+                    r"ethiopia|addis ababa|tanzania|zambia|zimbabwe|senegal|cameroon|algeria|amman|beirut|qatar|"
+                    r"doha|kuwait|bahrain|oman|riyadh|jeddah|martinique|guadeloupe|barbados|bahamas|nicaragua|"
+                    r"paraguay|bolivia|ecuador|venezuela|uruguay|johannesburg|cape town|durban|pretoria|kigali)\b", re.I)
+# ISO 3166 alpha-3 codes in Workday-style location tags ("PHL Remote", "BRA Remote"); case-sensitive
+ISO3_REMOTE = re.compile(r"(?<![A-Za-z])(PHL|IDN|JAM|BRA|VNM|IND|ZAF|MEX|COL|ARG|CHL|PER|CRI|GTM|HND|SLV|DOM|KEN|NGA|EGY|MAR|TUR|"
+                         r"POL|ROU|BGR|SRB|HRV|GRC|PRT|ESP|FRA|DEU|ITA|NLD|BEL|CHE|AUT|SWE|NOR|DNK|FIN|EST|LTU|LVA|UKR|CZE|HUN|"
+                         r"IRL|GBR|CAN|AUS|NZL|JPN|KOR|CHN|TWN|HKG|SGP|MYS|THA|PAK|BGD|LKA|NPL|ARE|SAU|ISR)(?=[\s-]+Remote\b)")
+US_COUNTRY = re.compile(r"^\s*(?:us|usa|u\.s\.a?\.?|united states(?: of america)?)\s*$", re.I)
 STATE_LIMIT_CTX = re.compile(r"(following states|these states|eligible states|states? (?:listed|below)|approved states|"
                              r"(?:hire|hiring|employ|employment|recruit\w*) (?:in|from|within) (?:the following|these|select|certain|only)|"
                              r"(?:reside|residing|located|live|living|based) in (?:one of )?(?:the following|these|select|approved|certain|"
@@ -175,6 +204,7 @@ STATE_LIMIT_CTX = re.compile(r"(following states|these states|eligible states|st
 STATE_EXCLUDE_CTX = re.compile(r"(unable to (?:hire|employ|consider)|not (?:able|eligible|currently able) to (?:hire|employ)|"
                                r"cannot (?:hire|employ|consider)|can't (?:hire|employ)|do not (?:hire|employ)|not hiring (?:in|from)|"
                                r"excluding|except(?: for)?|with the exception of|not (?:open|available) (?:to|in)|"
+                               r"excludes?\b[^.]{0,40}?\b(?:residing|living|located|based|residents)\b|"
                                r"(?:residents|candidates) of [^.]{0,80} (?:are not|will not be) (?:eligible|considered))", re.I)
 
 
@@ -360,7 +390,16 @@ def state_restriction(desc, home):
 
 
 def norm_workplace(wp):
+    """An ATS workplace tag -> remote | hybrid | onsite | ''. Workday's remoteType says "No Telework" for
+    on-site jobs and "Occasional Telework" for mostly on-site ones (UW, 2026-11-08), so a bare "telework"
+    is not enough."""
     w = (wp or "").lower()
+    if re.search(r"\b(?:no|not|non)[- ]?(?:telework|remote|telecommut\w*)", w):
+        return "onsite"
+    if re.search(r"occasional(?:ly)? (?:telework|remote)|\d\s*days? (?:remote|telework)|(?:remote|telework) \d\s*days?", w):
+        return "hybrid"
+    if re.search(r"remote or hybrid|hybrid or remote", w):
+        return "remote"
     if "hybrid" in w:
         return "hybrid"
     if "remote" in w or "telework" in w or "telecommut" in w or "anywhere" in w:
@@ -386,6 +425,48 @@ def _state_tag(prof):
 REMOTE_CLASSES = ("remote_us", "remote_ambiguous", "home_state_remote")
 
 
+def _raw(job):
+    raw = job.get("raw")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw else {}
+        except ValueError:
+            raw = {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def countries_of(job):
+    """The countries the ATS itself gives for the job ([] if none): Lever `country` (ISO 2), Recruitee's
+    country and locations, Workday's detail country, Ashby's postal address, Oracle's PrimaryLocationCountry."""
+    raw = _raw(job)
+    out = []
+    for c in (raw.get("country"), raw.get("country_code"), raw.get("PrimaryLocationCountry")):
+        if isinstance(c, str) and c.strip():
+            out.append(c.strip())
+    for l in raw.get("locations") if isinstance(raw.get("locations"), list) else []:
+        if isinstance(l, dict):
+            out += [str(l[k]).strip() for k in ("country", "country_code") if l.get(k)]
+    det = raw.get("_detail")
+    if isinstance(det, dict) and isinstance(det.get("country"), dict) and det["country"].get("descriptor"):
+        out.append(str(det["country"]["descriptor"]).strip())
+    addr = raw.get("address")
+    if isinstance(addr, dict) and isinstance(addr.get("postalAddress"), dict) and addr["postalAddress"].get("addressCountry"):
+        out.append(str(addr["postalAddress"]["addressCountry"]).strip())
+    return out
+
+
+def foreign_country(job, loc, near=False):
+    """The ATS's country when it is not the US and the location tag names nothing in the US -> str or ''.
+    Any US country among them ("US | EU") means it isn't foreign; so does a Workday "6 Locations" tag,
+    whose detail country is only the first of them."""
+    ccs = countries_of(job)
+    if not ccs or near or US_MARK.search(loc) or states_in(loc) or re.match(r"^\s*\d+ locations\s*$", loc, re.I):
+        return ""
+    if any(US_COUNTRY.match(c) or re.search(r"\b(?:us|usa|united states)\b", c, re.I) for c in ccs):
+        return ""
+    return ccs[0]
+
+
 def location_class(job, desc, prof=None):
     """-> (cls, detail) cls in: local, nearby, home_state_remote, remote_us, remote_ambiguous,
     remote_non_us, onsite_other, unknown."""
@@ -394,13 +475,16 @@ def location_class(job, desc, prof=None):
     title = job.get("title") or ""
     wp = norm_workplace(job.get("workplace"))
     negated = bool(REMOTE_NEG.search(desc or ""))
-    desc = REMOTE_NEG.sub(" ", desc or "")
+    desc = REMOTE_LIMITED.sub(" ", REMOTE_NEG.sub(" ", desc or ""))
     head = (desc or "")[:4000]
     tag_remote = wp == "remote" or bool(re.search(r"\bremote\b|anywhere|work from home|virtual|telework|distributed", loc + " " + title, re.I))
+    if wp in ("onsite", "hybrid") and not re.search(r"\bremote\b|anywhere|work from home", loc + " " + title, re.I):
+        tag_remote = False      # "No Telework" / "Occasional Telework": the tag's own word isn't a remote tag
     city_tagged = bool(loc.strip()) and not tag_remote
-    # a posting tagged with a city/office is remote only when its text says so plainly
+    # a posting tagged with a city/office is remote only when its text says so plainly,
+    # and on-site/hybrid wording anywhere in it wins (Lyft puts "3 days per week in the office" at the end)
     text_remote = bool((REMOTE_STRONG if city_tagged else REMOTE_TEXT).search(desc or ""))
-    text_onsite = ONSITE_TEXT.search(head) or negated
+    text_onsite = ONSITE_TEXT.search(desc if city_tagged or not loc.strip() else head) or negated
     hybrid = wp == "hybrid" or bool(re.search(r"\bhybrid\b", loc + " " + title, re.I))
     onsite_tag = wp == "onsite" or (city_tagged and bool(re.search(r"\boffice\b|\bhq\b|headquarters|on-?site|in[- ]person", loc, re.I)))
     local = prof.local.search(loc) if prof.local is not None else None
@@ -408,6 +492,9 @@ def location_class(job, desc, prof=None):
     nt = NON_US.search(title)
     if nt and not US_MARK.search(title) and not re.search(r"\b(us|usa|united states|americas|north america)\b", loc, re.I):
         return "remote_non_us" if tag_remote or not loc.strip() else "onsite_other", "title names %s" % nt.group(0)
+    fc = foreign_country(job, loc, near=bool(local or nearby))
+    if fc:
+        return ("remote_non_us" if tag_remote or not loc.strip() else "onsite_other"), "outside the US (the board says %s)" % fc
     tag = _state_tag(prof)
     home_only = (prof.home_only.search(desc or "") if prof.home_only is not None else None) or (
         tag is not None and re.search(r"\bremote\b", loc, re.I) and tag.search(loc)
@@ -420,7 +507,7 @@ def location_class(job, desc, prof=None):
     if remote:
         if home_only:
             return "home_state_remote", (home_only.group(0) if hasattr(home_only, "group") else loc)[:120]
-        non_us = NON_US.search(loc)
+        non_us = NON_US.search(loc) or ISO3_REMOTE.search(loc)
         us = US_MARK.search(loc) or (states_in(loc) and not re.search(r"europe|emea|apac|latam|asia|canada", loc, re.I))
         if city_tagged and not us and not non_us and not local and not nearby:
             return "remote_ambiguous", "remote per text, but tagged only '%s' (no US marker)" % loc[:60]
@@ -439,10 +526,121 @@ def location_class(job, desc, prof=None):
     if nearby:
         return "nearby", nearby.group(0)
     if not loc.strip() and not wp:
-        if text_remote:
+        if text_remote and not text_onsite:
             return "remote_us", "remote (from text)"
         return "unknown", "no location"
     return "onsite_other", ("hybrid " if hybrid else "on-site ") + loc[:80]
+
+
+US_WIDE = re.compile(r"\b(us|usa|u\.s\.|united states|anywhere|nationwide|americas|north america)\b", re.I)
+
+
+def remote_tied_states(loc):
+    """States a location tag ties its remote part to: "Durham, North Carolina; Herndon, Virginia; Remote - Virginia"
+    -> {"VA"} (remote only for Virginians; the others are offices). Empty when any remote part is US-wide or
+    names no single state."""
+    segs = [x.strip() for x in re.split(r"\s*[;|/\n]\s*", loc or "") if x.strip()]
+    rsegs = [x for x in segs if re.search(r"\bremote\b|telework|work from home", x, re.I)]
+    if not rsegs or any(US_WIDE.search(x) for x in rsegs):
+        return set()
+    tied = [states_in(x) for x in rsegs]
+    return set().union(*tied) if all(len(t) == 1 for t in tied) else set()
+
+
+def questions_of(job):
+    q = job.get("questions")
+    if isinstance(q, str):
+        try:
+            q = json.loads(q) if q else []
+        except ValueError:
+            q = []
+    return [x for x in (q or []) if isinstance(x, dict) and (x.get("label") or "").strip()]
+
+
+# an application-form question that ties the job to a place: "be located near Alpharetta, GA, Dallas, TX, or Temple, TX",
+# "within commuting distance of", "work on-site 3 days per week", "relocate to New York"
+FORM_PLACE = re.compile(
+    r"(?:located|based|live|living|reside|residing)\s+(?:near|close to|nearby|within (?:a )?(?:reasonable )?(?:commut\w*|driving) (?:distance|proximity))"
+    r"|(?:based|located|live) within (?:the )?proximity|commut(?:able|ing) (?:distance|proximity)|within \d+ miles"
+    r"|relocat\w* to\b|\b(?:on-?site|in[- ]office|in[- ]person)\b(?! interview)|\b(?:\d|one|two|three|four|five) days? (?:a|per|each) week (?:in|at|from|on-?site)"
+    r"|\bhybrid (?:schedule|position|role|model|work|requirement)|work (?:daily|\d days)", re.I)
+FORM_SOFT = re.compile(r"\b(optional|not required|if applicable|occasional(?:ly)?|periodic(?:ally)?|quarterly|annual(?:ly)?|travel\w*|"
+                       r"visits?|offsites?|team (?:meetings|events|gatherings)|as needed|once a (?:month|quarter|year)|interviews?|"
+                       r"training|experience|have you|describe|tell us|previously|if so|country)\b", re.I)
+# an answer that lets a remote applicant say "none of these" (the question is informational)
+FORM_INFO_OPTION = re.compile(r"^\s*(?:none(?: of (?:the|these) (?:above|locations|options))?|other|n/?a|not applicable)\s*\.?\s*$", re.I)
+FORM_LIST_REF = re.compile(r"\b(?:the following|listed|below|one of these)\b", re.I)
+QUESTION_CUT = 280      # adapters keep a question's description to 300 characters and its options to 12
+
+
+def form_gates(job, prof, lc):
+    """The application form's own location questions -> [(effect, why)], effect skip (a required question) or flag.
+
+    Only for jobs that read as remote: a form asking a remote applicant to live near an office elsewhere, to work
+    on-site, or to live in a list of states without the home state. Not a gate: a question naming the home state
+    or a local/nearby place (in its label, options or description), soft ones (optional, occasional or periodic
+    visits, training, the country), and one with a "None"/"Other" answer. A list that may be cut off (12 options,
+    a 300-character description) without the home state in view is only a flag."""
+    if lc not in REMOTE_CLASSES + ("unknown",):
+        return []
+    tag = _state_tag(prof)
+
+    def names_home(s):
+        return bool((prof.local is not None and prof.local.search(s)) or (prof.nearby is not None and prof.nearby.search(s))
+                    or (tag is not None and tag.search(s)))
+
+    out = []
+    for q in questions_of(job):
+        label = " ".join(q["label"].split())
+        opts = [str(o) for o in (q.get("options") or [])]
+        qdesc = " ".join(str(q.get("description") or "").split())
+        req = bool(q.get("required", True))
+        short = label if len(label) <= 140 else label[:137] + "..."
+        kind, sts, _ = state_restriction(label + "\n" + qdesc, prof.home_state)
+        if kind == "includes_home":
+            continue
+        if kind in ("excludes_home", "home_excluded_explicit"):
+            cut = len(qdesc) >= QUESTION_CUT and not states_in(label)
+            out.append(("skip" if req and not cut else "flag", "the application form limits it to %s ('%s')" % (
+                ", ".join(sts[:8]) + ("..." if len(sts) > 8 else ""), short)))
+            continue
+        if not FORM_PLACE.search(label) or FORM_SOFT.search(label):
+            continue
+        if names_home(" | ".join([label, qdesc] + opts)):
+            continue
+        informational = any(FORM_INFO_OPTION.match(o) for o in opts)
+        cut = FORM_LIST_REF.search(label) and (len(opts) >= 12 or len(qdesc) >= QUESTION_CUT)
+        out.append(("skip" if req and not informational and not cut else "flag", "the application form asks: '%s'" % short))
+    return out
+
+
+def form_pay_text(job):
+    """Pay stated in the form's required questions ("a set rate of $18 an hour. Does this meet ...?")."""
+    return "\n".join("%s %s" % (q["label"], " / ".join(q.get("options") or [])) for q in questions_of(job)
+                     if q.get("required", True) and "$" in q["label"] + " ".join(q.get("options") or []))
+
+
+def _date(s):
+    try:
+        return datetime.date.fromisoformat((s or "")[:10])
+    except ValueError:
+        return None
+
+
+def job_age(job, today=None):
+    """Days since the job went up -> (days or None, how). The board's posted date, except that a job which
+    appeared on a board we were already polling (not its baseline poll) counts from when it appeared, if that's
+    later: boards re-list old postings (Lever keeps createdAt). Workday/Oracle are searched, not read in full,
+    so their first-seen date isn't proof of anything."""
+    today = today or datetime.date.today()
+    posted = _date(job.get("posted_at"))
+    if posted is None:
+        return None, ""
+    age = (today - posted).days
+    seen = _date(job.get("first_seen"))
+    if seen and job.get("baseline") == 0 and job.get("ats") not in ("workday", "oracle") and (today - seen).days < age - 14:
+        return max(0, (today - seen).days), "relisted"
+    return age, "posted"
 
 
 def assess(job, prof=None, company=""):
@@ -525,21 +723,28 @@ def assess(job, prof=None, company=""):
         elif kind == "includes_home":
             reasons.append("%s is on its list of hiring states" % home)
     if lc == "remote_us" and home:
-        loc_states = states_in(job.get("location") or "")
-        if len(loc_states) == 1 and home not in loc_states and not re.search(r"\b(us|usa|united states|anywhere|nationwide)\b",
-                                                                              job.get("location") or "", re.I):
-            st1 = next(iter(loc_states))
-            if re.search(r"(?i)remote", job.get("location") or "") and len((job.get("location") or "").split("/")) == 1:
-                skip.append("remote tied to %s (location tag '%s')" % (st1, (job.get("location") or "")[:50]))
+        loc_s = job.get("location") or ""
+        tied = remote_tied_states(loc_s)
+        segs = [x.strip() for x in re.split(r"\s*[;|/\n]\s*", loc_s) if x.strip()]
+        seg_states = [states_in(x) for x in segs]
+        if tied and home not in tied:
+            skip.append("remote tied to %s (location tag '%s')" % (", ".join(sorted(tied)), loc_s[:60]))
+        elif not tied and not US_WIDE.search(loc_s) and segs and all(len(t) == 1 for t in seg_states) \
+                and home not in set().union(*seg_states):
+            # a remote job tagged only with offices in other states ("Dallas, TX / Alpharetta, GA")
+            if len(segs) == 1:
+                flags.append("remote tagged to %s only: check %s residents can apply" % (next(iter(seg_states[0])), home))
             else:
-                flags.append("remote tagged to %s only: check %s residents can apply" % (st1, home))
+                flags.append("remote, but tagged only to %s: may have to live near one" % loc_s[:60])
+    for effect, why in form_gates(job, prof, lc):
+        (skip if effect == "skip" else flags).append(why)
     if lc == "home_state_remote":
         reasons.append("%s-residents-only remote: small applicant pool" % home_name)
     elif lc == "local":
         reasons.append("local (on-site is fine)")
 
     # ---- pay
-    pk, ptop, pline = pay_of(desc, job.get("pay_text") or "")
+    pk, ptop, pline = pay_of(desc, (job.get("pay_text") or "") + "\n" + form_pay_text(job))
     health = bool(HEALTH.search(desc))
     no_benefits = NO_BENEFITS.search(desc)
     contract = CONTRACT.search(title + "\n" + (job.get("employment_type") or "") + "\n" + desc[:3000])
@@ -611,6 +816,15 @@ def assess(job, prof=None, company=""):
     gap_long = []
     for why, effect, _ in required_gaps(desc, prof):
         (skip if effect == "skip" else flags if effect == "flag" else gap_long).append(why)
+
+    # ---- freshness: a posting up for a year is not a fresh match
+    age, age_how = job_age(job)
+    if age is not None:
+        facts["age_days"] = age
+        if age_how == "relisted":
+            facts["relisted"] = True
+        if prof.skip_days and age > prof.skip_days and lc != "local":     # a local always-open posting stays (at most fair)
+            skip.append("posted %d days ago: a stale posting" % age)
 
     # ---- years / verdict
     req, pref = years_asked(desc)
@@ -695,20 +909,18 @@ def assess(job, prof=None, company=""):
         score -= 8
     if deg == "equivalent_ok":
         score += 2
-    posted = job.get("posted_at") or ""
-    if posted:
-        try:
-            age = (datetime.date.today() - datetime.date.fromisoformat(posted[:10])).days
-            facts["age_days"] = age
-            if age <= 3:
-                score += 3
-            elif age > 45:
-                score -= 10
-                flags.append("posted %d days ago" % age)
-            elif age > 21:
-                score -= 4
-        except ValueError:
-            pass
+    stale = bool(age is not None and prof.stale_days and age > prof.stale_days)
+    if age is not None:
+        if age <= 3:
+            score += 3
+        elif stale:
+            score -= 10
+            flags.append("posted %d days ago: probably stale (or always open), so at most fair" % age)
+        elif age > 45:
+            score -= 10
+            flags.append("posted %d days ago" % age)
+        elif age > 21:
+            score -= 4
     score -= 2 * len([f for f in flags if not f.startswith("health benefits not stated")])
     score = max(0, min(100, score))
     if verdict == "skip":
@@ -722,6 +934,8 @@ def assess(job, prof=None, company=""):
             tier = "good"
         if lc == "nearby" and tier == "strong":
             tier = "good"
+        if stale and tier in ("strong", "good"):
+            tier = "fair"
     return {"score": score, "tier": tier, "verdict": verdict, "field": field, "reasons": reasons, "flags": flags,
             "facts": facts, "skips": skip}
 
@@ -743,7 +957,9 @@ def prefilter(job, prof=None):
     wp = norm_workplace(job.get("workplace"))
     remote = wp == "remote" or re.search(r"\bremote\b|anywhere|work from home|virtual|telework|distributed", loc, re.I)
     near = (prof.local is not None and prof.local.search(loc)) or (prof.nearby is not None and prof.nearby.search(loc))
-    if NON_US.search(loc) and not (US_MARK.search(loc) or states_in(job.get("location") or "")) and not near:
+    if (NON_US.search(loc) or ISO3_REMOTE.search(loc)) and not (US_MARK.search(loc) or states_in(job.get("location") or "")) and not near:
+        return "non-us"
+    if foreign_country(job, job.get("location") or "", near=bool(near)):
         return "non-us"
     if not remote and not near and wp in ("onsite", "hybrid") and (job.get("location") or "").strip():
         return "onsite"

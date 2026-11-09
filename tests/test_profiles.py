@@ -154,6 +154,25 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(self.titles("partner"), ["Onboarding Specialist", "Payroll Specialist"])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM profile_scores").fetchone()[0], 3)   # tech support isn't the partner's
 
+    def test_rescore_drops_every_profile_when_a_job_stops_passing(self):
+        from jobatlas import cli
+        jid = self.add("Payroll Specialist")
+        poll.score_jobs(self.conn)
+        self.assertEqual(self.conn.execute("SELECT routed_to FROM jobs WHERE id=?", (jid,)).fetchone()[0], "partner")
+        # the board now says it's on-site elsewhere (a Workday "No Telework" tag)
+        self.conn.execute("UPDATE jobs SET location='Seattle, WA', workplace='No Telework' WHERE id=?", (jid,))
+        self.conn.commit()
+        with mock.patch.object(db, "connect", return_value=self.conn), mock.patch("jobatlas.export.write", return_value={}), \
+                mock.patch("builtins.print"):
+            cli.cmd_rescore(None)
+        row = self.conn.execute("SELECT prefilter, tier, routed_to FROM jobs WHERE id=?", (jid,)).fetchone()
+        self.assertNotEqual(row["prefilter"], "pass")
+        self.assertEqual(score.prefilter({"title": "Payroll Specialist", "location": "Seattle, WA", "workplace": "No Telework"},
+                                         PARTNER), "onsite")
+        self.assertEqual((row["tier"], row["routed_to"]), (None, None))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM profile_scores WHERE job_id=?", (jid,)).fetchone()[0], 0)
+        self.assertEqual(self.titles("partner"), [])
+
     def test_main_keeps_fields_unless_strong_for_the_other_profile(self):
         self.seekers[1] = profile.Seeker("partner", PARTNER, claim_tier="good", alerts=self.partner_alerts,
                                          main_keeps_fields=["implementation"])

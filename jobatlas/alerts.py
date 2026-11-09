@@ -60,8 +60,10 @@ def secrets(cfg):
     return env
 
 
-# adapters that read the application form's own questions (the others leave `questions` empty)
+# adapters that read the application form's own questions (the others leave `questions` empty);
+# Lever's form is read from its /apply page for matches only (poll.read_forms), so only once raw._form_read is set
 FORM_ATS = ("greenhouse", "rippling", "neogov")
+PAGE_FORM_ATS = ("lever",)
 WRITTEN = re.compile(r"\b(why|describe|tell us|explain|share|what (?:excites|interests|draws|motivates|makes|would)|"
                      r"how (?:would|do|did|have) you|walk us|example|cover letter|in your own words|elaborate|summar\w*|"
                      r"motivat\w*|essay|in \d+ (?:words|sentences))\b", re.I)
@@ -96,13 +98,21 @@ def written_questions(questions):
 
 def form_line(r):
     """One line on the application form: written answers needed, quick apply, or not read here."""
-    if r["ats"] not in FORM_ATS:
+    page_read = r["ats"] in PAGE_FORM_ATS and "_form_read" in (db.jload(_get(r, "raw"), {}) or {})
+    if r["ats"] not in FORM_ATS and not page_read:
         return "❔ Form not read (%s): check the page" % r["ats"].title()
     written = written_questions(db.jload(r["questions"], []))
     if not written:
         return "✅ Quick apply: no written answers"
     shown = "; ".join((w if len(w) <= 90 else w[:87] + "...") for w in written[:2])
     return "✍️ Written answers (%d): %s%s" % (len(written), shown, "; ..." if len(written) > 2 else "")
+
+
+def _get(r, k):
+    try:
+        return r[k]
+    except (KeyError, IndexError):
+        return None
 
 
 def md(s):

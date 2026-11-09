@@ -38,6 +38,7 @@ DEFAULTS = {
         "workers": 12,                # threads; per-host spacing still applies
         "max_failures": 6,            # consecutive failures before a board is deactivated
         "detail_budget": 1500,        # max per-job detail fetches per poll run
+        "form_budget": 20,            # max application forms read per poll run (Lever matches: poll.read_forms)
         "ats_interval_hours": {"neogov": 12},   # minimum hours between polls for these ATSes
     },
     "http": {
