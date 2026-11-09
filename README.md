@@ -51,7 +51,11 @@ preferred, degree wording, remote/hybrid/on-site *as written* (not just the tag)
 state hiring lists, weekend shifts, quota pay. It also reads the board's own country
 for the job, Workday's telework tags ("No Telework" is on-site), and the application
 form's questions: a remote job whose form asks you to live near an office elsewhere,
-work on-site, or live in a list of states without yours is skipped. A posting up for
+work on-site, or live in a list of states without yours is skipped, and so is one whose
+form asks for work authorization only in another country. A clearance, a degree, a
+driver's licence or weekend availability asked as a required yes/no question goes through
+the same rule as in the posting, and so do your `required_gaps`. The employer's own
+questions count toward the keyword match too. A posting up for
 over 120 days is at most fair, and over a year it's skipped (`freshness` in the
 profile; a job that newly appears on a board counts from then). What you want lives in a JSON
 profile ([example](examples/profile.example.json)), and each hard rule can be
@@ -152,6 +156,12 @@ for boards that are searched rather than read in full.
 - Public endpoints only: nothing behind a login or CAPTCHA.
 - robots.txt honoured for every host; one request at a time per host, and
   multi-tenant platforms share one gate.
+- Forms that only exist in a browser (Ashby's, Workday's apply page) are read with
+  an optional browser server (`forms.browser`, [camofox-browser](https://github.com/jo-inc/camofox-browser)):
+  the public page is loaded if robots.txt allows it, read, and the tab closed, one
+  at a time. Nothing is typed or submitted and no account is made, so Workday's
+  questions, which come after Create Account or the first steps, are recorded as
+  not readable.
 - `If-None-Match` / `If-Modified-Since` whenever the board supports them.
 - 429s back off and double the spacing; a long `Retry-After` is honoured across runs.
 
@@ -175,7 +185,11 @@ channel, or iMessage) are configured in `config.json` with secrets in an env fil
 With `"style": "card", "form": true` each job gets a line on its application form:
 the written answers it needs (quoted), "quick apply", or "not read" for boards whose
 forms aren't public. Greenhouse, Rippling and NEOGOV forms come with the job's
-detail; Lever's are read from the public `/apply` page, for matches only. `jobatlas alerts catchup --hours 336` sends the backlog once
+detail. Lever's (its `/apply` page), Workable's (`/api/v1/jobs/<code>/form`), Ashby's
+and Workday's (in the browser) are read for every scored job: a new match's form
+before its alert, within `forms.new_seconds`; one that isn't read in time is alerted
+as "form not read yet" and read after the alerts, with older jobs. `jobatlas forms`
+counts them by state, and `jobatlas forms --read N` reads some now. `jobatlas alerts catchup --hours 336` sends the backlog once
 after you turn alerts on. `deploy/systemd/` has the `watch`
 service and the API, plus poll and discovery timers if you'd rather run hourly.
 

@@ -3,7 +3,7 @@
 Token "eu:<slug>" means the EU host. Descriptions and salary ranges come in
 the list itself, so no detail call is needed. Lever's application questions
 aren't in the public API; form() reads them from the posting's public
-/apply page (robots.txt allows it), and poll.read_forms calls it for matches only.
+/apply page (robots.txt allows it); poll.read_forms calls it for every scored job, matches first.
 """
 import html as htmlmod
 import json

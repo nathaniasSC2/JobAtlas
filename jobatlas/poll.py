@@ -19,7 +19,7 @@ import re
 import threading
 import time
 
-from . import adapters, config, db, ledger, score as score_mod
+from . import adapters, browser as browser_mod, config, db, ledger, score as score_mod
 from .net import Client
 
 log = logging.getLogger("jobatlas.poll")
@@ -286,40 +286,102 @@ def verify_urls(conn, client, budget=300):
 
 
 MATCH = ("strong", "good", "fair")
-FORM_ATS = ("lever",)       # adapters whose form is read from its own page (adapter.form), for matches only
-FORM_TRIES = 3
+# adapters whose application form isn't in the job data and is read on its own (adapter.form): Lever's /apply
+# page, Workable's form JSON, Ashby's /application page and Workday's apply page in the browser (FORM_BROWSER)
+FORM_ATS = ("lever", "ashby", "workable", "workday")
+FORM_TRIES = 3              # failed reads before a job's form is left unread
+FORM_RETRY_MINUTES = 30     # a failed one is tried again no sooner than this
+FORM_BOARD_DAYS = 14        # FORM_PER_BOARD adapters (Workday's account wall): one check per board this often
+FORM_FINAL = ("robots.txt disallows",)   # errors that won't change on a retry
 
 
-def read_forms(conn, client, budget=20):
-    """Read the application form of open matches on ATSes whose questions aren't in the job data (Lever's
-    /apply page): the questions can rule a job out ("must live near Dallas", a set $18/hr rate). Each job's
-    form is read once (raw._form_read); a page that is gone closes the job. -> ids whose questions changed."""
+def _form_rows(conn, ats, ids, matches_only, limit):
+    where = ["j.closed_at IS NULL", "j.prefilter='pass'", "j.ats IN (%s)" % ",".join("?" * len(ats)),
+             "json_extract(j.raw, '$._form_read') IS NULL", "COALESCE(json_extract(j.raw, '$._form_fails'), 0) < ?",
+             "COALESCE(json_extract(j.raw, '$._form_failed_at'), '') < ?"]
+    args = list(ats) + [FORM_TRIES, _iso(_utcnow() - datetime.timedelta(minutes=FORM_RETRY_MINUTES))]
+    if ids is not None:
+        ids = list(ids)[:900]
+        if not ids:
+            return []
+        where.append("j.id IN (%s)" % ",".join("?" * len(ids)))
+        args += ids
+    best = ("(CASE WHEN j.tier IN ('strong','good') OR EXISTS (SELECT 1 FROM profile_scores p WHERE p.job_id=j.id AND p.tier IN "
+            "('strong','good')) THEN 0 WHEN j.tier='fair' OR EXISTS (SELECT 1 FROM profile_scores p WHERE p.job_id=j.id AND "
+            "p.tier='fair') THEN 1 ELSE 2 END)")
+    if matches_only:
+        where.append(best + " < 2")
+    return conn.execute("SELECT j.* FROM jobs j WHERE %s ORDER BY %s, j.first_seen DESC LIMIT ?" % (" AND ".join(where), best),
+                        args + [limit]).fetchall()
+
+
+def _board_wall(conn, r):
+    """A FORM_PER_BOARD adapter's recent answer for another job on the same board -> its raw._form, or None."""
+    cut = _iso(_utcnow() - datetime.timedelta(days=FORM_BOARD_DAYS))
+    row = conn.execute("SELECT id, raw FROM jobs WHERE board_id=? AND id<>? AND json_extract(raw, '$._form_state') IN ('signin','guest') "
+                       "AND json_extract(raw, '$._form_read') >= ? AND json_extract(raw, '$._form.from_job') IS NULL "
+                       "ORDER BY json_extract(raw, '$._form_read') DESC LIMIT 1", (r["board_id"], r["id"], cut)).fetchone()
+    if not row:
+        return None
+    raw = db.jload(row["raw"], {}) or {}
+    return {"state": raw.get("_form_state"), "form": dict(raw.get("_form") or {}, from_job=row["id"])}
+
+
+def read_forms(conn, client, budget=20, seconds=None, ids=None, browser=None, matches_only=False, stats=None):
+    """Read the application form of open, scored jobs on FORM_ATS boards: the questions can rule a job out
+    ("must live near Dallas", "authorized to work in Canada?", a set $18/hr rate). Matches first, newest first;
+    `ids` limits it to those jobs (this run's), `seconds` to a time budget (a new match must not wait on a slow
+    form: its alert goes out marked "form not read" and the form is read on a later run).
+
+    Each job's form is read once: the questions go to jobs.questions (every field), the form as read to
+    raw._form, raw._form_state says read / signin / guest (Workday: the questions are behind an account or
+    after the first steps) / robots, raw._form_read when. A failed read is retried after FORM_RETRY_MINUTES,
+    FORM_TRIES times. A posting that is gone closes the job. -> ids whose questions or form state changed."""
     if budget <= 0:
         return []
-    rows = conn.execute(
-        "SELECT * FROM jobs WHERE closed_at IS NULL AND ats IN (%s) AND (tier IN ('strong','good','fair') OR id IN "
-        "(SELECT job_id FROM profile_scores WHERE tier IN ('strong','good','fair'))) AND json_extract(raw, '$._form_read') IS NULL "
-        "AND COALESCE(json_extract(raw, '$._form_fails'), 0) < ? ORDER BY first_seen DESC LIMIT ?"
-        % ",".join("?" * len(FORM_ATS)), list(FORM_ATS) + [FORM_TRIES, budget]).fetchall()
+    ats = [a for a in FORM_ATS if browser is not None or not getattr(adapters.get(a), "FORM_BROWSER", False)]
+    rows = _form_rows(conn, ats, ids, matches_only, budget)
+    deadline = time.monotonic() + seconds if seconds else None
     changed = []
+    st = stats if stats is not None else {}
     for r in rows:
+        if deadline is not None and time.monotonic() > deadline:
+            st["out_of_time"] = st.get("out_of_time", 0) + 1
+            continue
         a = adapters.get(r["ats"])
         raw = db.jload(r["raw"], {}) or {}
-        try:
-            d = a.form(client, r["token"], {"url": r["url"], "ext_id": r["ext_id"]})
-        except Exception as e:  # noqa: BLE001
-            d = {"_detail_error": "%s: %s" % (type(e).__name__, e)}
+        job = {"url": r["url"], "ext_id": r["ext_id"], "title": r["title"], "raw": raw}
+        d = _board_wall(conn, r) if getattr(a, "FORM_PER_BOARD", False) else None
+        if d is None:
+            try:
+                d = a.form(client, r["token"], job, browser=browser) if getattr(a, "FORM_BROWSER", False) else \
+                    a.form(client, r["token"], job)
+            except Exception as e:  # noqa: BLE001
+                d = {"_detail_error": "%s: %s" % (type(e).__name__, e)}
         if d.get("_closed"):
             conn.execute("UPDATE jobs SET closed_at=? WHERE id=?", (db.now(), r["id"]))
-        elif d.get("_detail_error"):
+            st["closed"] = st.get("closed", 0) + 1
+        elif d.get("_detail_error") and not any(x in d["_detail_error"] for x in FORM_FINAL):
             raw["_form_fails"] = int(raw.get("_form_fails") or 0) + 1
+            raw["_form_failed_at"] = db.now()
             raw["_form_error"] = d["_detail_error"][:160]
             conn.execute("UPDATE jobs SET raw=? WHERE id=?", (db.jdump(raw), r["id"]))
+            st["failed"] = st.get("failed", 0) + 1
         else:
+            if d.get("_detail_error"):          # final: robots.txt closes the page to us
+                d = {"state": "robots", "form": {"error": d["_detail_error"][:160]}}
             raw["_form_read"] = db.now()
-            conn.execute("UPDATE jobs SET questions=?, raw=? WHERE id=?", (db.jdump(d.get("questions") or []), db.jdump(raw), r["id"]))
+            raw["_form_state"] = d.get("state") or "read"
+            if d.get("form") is not None:
+                raw["_form"] = d["form"]
+            for k in ("_form_error", "_form_failed_at"):
+                raw.pop(k, None)
+            qs = d["questions"] if "questions" in d else db.jload(r["questions"], [])
+            conn.execute("UPDATE jobs SET questions=?, raw=? WHERE id=?", (db.jdump(qs or []), db.jdump(raw), r["id"]))
             changed.append(r["id"])
-        conn.commit()
+            k = "%s_%s" % (r["ats"], raw["_form_state"])
+            st[k] = st.get(k, 0) + 1
+        conn.commit()       # one short write per form: never hold the lock while a page loads
     return changed
 
 
@@ -402,7 +464,7 @@ def score_jobs(conn, ids=None, where=None):
 
 
 def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=None, detail_budget=None, quiet=False,
-        client=None, verify_budget=300, backfill_budget=None):
+        client=None, verify_budget=300, backfill_budget=None, browser=None):
     cfg = config.cfg()
     cfgp = cfg["poll"]
     conn = conn or db.connect()
@@ -458,9 +520,15 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
     ids |= {r[0] for r in conn.execute("SELECT id FROM jobs WHERE prefilter='pass' AND closed_at IS NULL AND scored_at IS NULL")}
     tiers = score_jobs(conn, ids=sorted(ids))
     stats["scored"] = tiers
-    formed = read_forms(conn, client, cfgp.get("form_budget", 20))
-    if formed:      # before the alerts: a form question can rule a new match out
-        stats["forms"] = len(formed)
+    fcfg = cfg.get("forms") or {}
+    if browser is None:
+        browser = browser_mod.from_config(fcfg, client)
+    # before the alerts, this run's matches: a form question can rule a new match out. Within a short time
+    # budget; one that isn't read in time is alerted anyway ("form not read") and read after the alerts.
+    fst = {}
+    formed = read_forms(conn, client, cfgp.get("form_budget", 20), seconds=fcfg.get("new_seconds", 30), ids=sorted(ids),
+                        browser=browser, matches_only=True, stats=fst)
+    if formed:
         score_jobs(conn, ids=formed)
     stats["verified"] = verify_urls(conn, client, verify_budget)
     new_matches = conn.execute(
@@ -471,6 +539,13 @@ def run(conn=None, limit=None, ats=None, all_boards=False, ids=None, workers=Non
     # alerts (disabled by default) right after scoring, then the export
     from . import alerts, export
     stats["alerts"] = alerts.process(conn, started)
+    # after the alerts, every other scored job's form (older ones, and the ones that ran out of time above)
+    later = read_forms(conn, client, fcfg.get("backfill_budget", 10), seconds=fcfg.get("backfill_seconds", 20),
+                       browser=browser, stats=fst)
+    if later:
+        score_jobs(conn, ids=later)
+    if fst:
+        stats["forms"] = dict(fst, read=len(formed) + len(later))
     stats["export"] = export.write(conn)
     conn.execute("UPDATE runs SET finished=?, boards=?, ok=?, failed=?, not_modified=?, jobs_seen=?, new_jobs=?, closed=?, new_matches=?, notes=? WHERE id=?",
                  (db.now(), stats["boards"], stats["ok"], stats["failed"] + stats["blocked"], stats["not_modified"], stats["jobs_seen"],

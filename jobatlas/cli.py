@@ -149,10 +149,46 @@ def cmd_rescore(a):
             changed += 1
             if changed % 200 == 0:
                 conn.commit()
+    # and any extra-profile score left on a job that doesn't pass (from before that rule)
+    stale = conn.execute("DELETE FROM profile_scores WHERE job_id IN (SELECT id FROM jobs WHERE prefilter<>'pass')").rowcount
+    conn.execute("UPDATE jobs SET routed_to=NULL WHERE prefilter<>'pass' AND routed_to IS NOT NULL")
     conn.commit()
-    print(json.dumps({"prefilter_changed": changed}))
+    print(json.dumps({"prefilter_changed": changed, "stale_profile_scores": stale}))
     print(json.dumps(poll.score_jobs(conn), indent=1))
     print(json.dumps(export.write(conn)))
+
+
+def form_counts(conn):
+    """Open scored jobs on the boards whose forms are read on their own, by board and form state."""
+    from . import poll
+    out = {}
+    for ats, st, n in conn.execute(
+            "SELECT ats, CASE WHEN json_extract(raw, '$._form_read') IS NOT NULL THEN COALESCE(json_extract(raw, '$._form_state'), 'read') "
+            "WHEN COALESCE(json_extract(raw, '$._form_fails'), 0) >= ? THEN 'failed' WHEN json_extract(raw, '$._form_fails') > 0 "
+            "THEN 'retrying' ELSE 'unread' END, COUNT(*) FROM jobs WHERE closed_at IS NULL AND prefilter='pass' AND ats IN (%s) "
+            "GROUP BY 1, 2" % ",".join("?" * len(poll.FORM_ATS)), [poll.FORM_TRIES] + list(poll.FORM_ATS)):
+        out.setdefault(ats, {})[st] = n
+    return out
+
+
+def cmd_forms(a):
+    """Application forms read on their own (Lever, Workable, Ashby, Workday): counts, or read some now."""
+    from . import browser as browser_mod, export, poll
+    from .net import Client
+    conn = db.connect()
+    if a.read:
+        cfg = config.cfg()
+        client = Client(cfg)
+        browser = browser_mod.from_config(cfg.get("forms"), client)
+        if browser is not None:
+            browser.close_stale()
+        st = {}
+        ids = poll.read_forms(conn, client, a.read, seconds=a.seconds or None, browser=browser, matches_only=a.matches, stats=st)
+        print(json.dumps({"read": len(ids), **st}))
+        if ids and not a.no_score:
+            print(json.dumps(poll.score_jobs(conn, ids=ids)))
+            export.write(conn)
+    print(json.dumps(form_counts(conn), indent=1))
 
 
 def cmd_status(a):
@@ -329,6 +365,12 @@ def main(argv=None):
     s.set_defaults(fn=cmd_details)
     s = sub.add_parser("rescore")
     s.set_defaults(fn=cmd_rescore)
+    s = sub.add_parser("forms", help="application forms read on their own: counts by board and state, or --read N now")
+    s.add_argument("--read", type=int, default=0, help="read up to N unread forms (matches first), then rescore them")
+    s.add_argument("--seconds", type=float, default=0, help="stop reading after this long")
+    s.add_argument("--matches", action="store_true", help="only strong/good/fair jobs")
+    s.add_argument("--no-score", action="store_true", help="don't rescore the jobs whose forms were read")
+    s.set_defaults(fn=cmd_forms)
     s = sub.add_parser("status")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_status)

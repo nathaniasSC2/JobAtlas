@@ -38,7 +38,7 @@ DEFAULTS = {
         "workers": 12,                # threads; per-host spacing still applies
         "max_failures": 6,            # consecutive failures before a board is deactivated
         "detail_budget": 1500,        # max per-job detail fetches per poll run
-        "form_budget": 20,            # max application forms read per poll run (Lever matches: poll.read_forms)
+        "form_budget": 20,            # max application forms of this run's matches read before its alerts (poll.read_forms)
         "ats_interval_hours": {"neogov": 12},   # minimum hours between polls for these ATSes
     },
     "http": {
@@ -74,6 +74,18 @@ DEFAULTS = {
         "backfill_budget": 25,        # older jobs whose detail fetch failed, retried per cycle (new jobs come first)
         "discover_hour": 3,           # local hour for the daily seed + discovery run (None = never)
         "seed_sources": ["remoteintech", "employers"],
+    },
+    # Application forms that aren't in the job data (Lever, Workable, Ashby, Workday: poll.read_forms) are read
+    # for every scored job: this run's matches before the alerts, within new_seconds (a slow form is alerted as
+    # "form not read" and read later), then older ones after the alerts.
+    "forms": {
+        "new_seconds": 30,            # time for this run's matches' forms before its alerts go out
+        "backfill_budget": 10,        # other scored jobs' forms read per run, after the alerts
+        "backfill_seconds": 20,
+        # Ashby's form and Workday's apply page only render in a browser: a camofox-browser server
+        # (browser.py). {} = those forms aren't read. e.g.
+        #   {"url": "http://127.0.0.1:9377", "key_env": "CAMOFOX_ACCESS_KEY", "docker_container": "camofox-browser"}
+        "browser": {},
     },
     "export": {"hours": 72, "min_tier": "fair"},
     "api": {"host": "127.0.0.1", "port": 8804},

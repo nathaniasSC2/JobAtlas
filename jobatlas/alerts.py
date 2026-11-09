@@ -61,9 +61,12 @@ def secrets(cfg):
 
 
 # adapters that read the application form's own questions (the others leave `questions` empty);
-# Lever's form is read from its /apply page for matches only (poll.read_forms), so only once raw._form_read is set
+# these forms are read on their own (poll.read_forms), so only once raw._form_read is set
 FORM_ATS = ("greenhouse", "rippling", "neogov")
-PAGE_FORM_ATS = ("lever",)
+PAGE_FORM_ATS = ("lever", "ashby", "workable", "workday")
+WALLS = {"signin": "🔒 Form not read: %s asks for an account before its questions",
+         "guest": "🔒 Form not read: %s asks its questions only after you start the application",
+         "robots": "❔ Form not read (%s: robots.txt closes the page): check the page"}
 WRITTEN = re.compile(r"\b(why|describe|tell us|explain|share|what (?:excites|interests|draws|motivates|makes|would)|"
                      r"how (?:would|do|did|have) you|walk us|example|cover letter|in your own words|elaborate|summar\w*|"
                      r"motivat\w*|essay|in \d+ (?:words|sentences))\b", re.I)
@@ -97,9 +100,15 @@ def written_questions(questions):
 
 
 def form_line(r):
-    """One line on the application form: written answers needed, quick apply, or not read here."""
-    page_read = r["ats"] in PAGE_FORM_ATS and "_form_read" in (db.jload(_get(r, "raw"), {}) or {})
+    """One line on the application form: written answers needed, quick apply, or not read (yet, or behind an
+    account: Workday)."""
+    raw = db.jload(_get(r, "raw"), {}) or {}
+    page_read = r["ats"] in PAGE_FORM_ATS and "_form_read" in raw
+    if page_read and raw.get("_form_state") in WALLS:
+        return WALLS[raw["_form_state"]] % r["ats"].title()
     if r["ats"] not in FORM_ATS and not page_read:
+        if r["ats"] in PAGE_FORM_ATS:
+            return "❔ Form not read yet (%s): check the page" % r["ats"].title()
         return "❔ Form not read (%s): check the page" % r["ats"].title()
     written = written_questions(db.jload(r["questions"], []))
     if not written:

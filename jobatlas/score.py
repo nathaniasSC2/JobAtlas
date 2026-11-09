@@ -12,7 +12,9 @@ Hard skips (verdict "skip"), each switchable to "flag" or "ignore" in the profil
   * remote limited to states that exclude the home state, or "must reside in <other state>",
     "excludes residents of ...", or a location tag whose only remote part is one other state;
   * the application form's required questions: "must live near <other place>", on-site/in-office
-    days, a state list without the home state (these come from the form, not the posting);
+    days, a state list without the home state, work authorization only for another country; and,
+    through the rules below, a clearance, a degree, a driver's licence, weekend availability or a
+    required_gaps item asked as a yes/no question (these come from the form, not the posting);
   * a posting older than freshness.skip_days (365), except a local one; older than freshness.stale_days
     (120) it is at most fair. A job that appeared later on a board we were already watching counts from then;
   * pay clearly under the minimum; under the floor only with health insurance;
@@ -377,7 +379,10 @@ def state_restriction(desc, home):
         sts.discard("DC") if "DC" in sts and len(sts) > 1 else None
         if not sts:
             continue
-        if ex and ex.start() < (lim.start() if lim else 10 ** 6):
+        # "...the following states? DE, ND, VT, WV - Note that we are not able to employ in these states." (Vida)
+        after = text[start + len(ln):start + len(ln) + 200] if lim and start >= 0 else ""
+        later_ex = lim and STATE_EXCLUDE_CTX.search(after) and re.search(r"\b(?:these|those|the above|listed) states\b", after, re.I)
+        if (ex and ex.start() < (lim.start() if lim else 10 ** 6)) or later_ex:
             if home in sts:
                 return "home_excluded_explicit", sorted(sts), ln[:200]
             continue
@@ -595,16 +600,51 @@ FORM_LIST_REF = re.compile(r"\b(?:the following|listed|below|one of these)\b", r
 QUESTION_CUT = 280      # adapters keep a question's description to 300 characters and its options to 12
 
 
-def form_gates(job, prof, lc):
-    """The application form's own location questions -> [(effect, why)], effect skip (a required question) or flag.
+# a question that asks the applicant yes or no: a sentence that starts "Do you / Are you / Have you ..."
+# ("This role requires weekend work. Are you available?"), not "How / Which / What ...?"
+ASKS = re.compile(r"(?:^|[.?!:]\s+|\)\s+)\W*(?:do|does|are|have|has|can|could|will|would|is|did|were)\b", re.I)
+YES_NO = re.compile(r"^\s*(?:yes|no)\b", re.I)
+AUTH = re.compile(r"\b(?:authori[sz](?:ed|ation)|right to work|eligib\w* to (?:work|be employed)|legally (?:able|permitted|entitled|allowed) "
+                  r"to work|work permit|permission to work|citizen(?:ship)?|permanent resident|residency (?:status|permit))\b", re.I)
+FORM_US = re.compile(r"(?i:united states|\bu\.\s?s\.(?:\s?a\.?)?|\bamerica\b|\bstateside\b)|\bUSA?\b")
+AUTH_SOFT = re.compile(r"\bif (?:you are|you're|you live|located|based|applying)\b|\b(?:which|what) countr|\bother than\b|"
+                       r"\b(?:cuba|iran|syria|north korea|dprk|sanction\w*|embargo\w*|export control)", re.I)   # export-control screens
+SOFT_ASK = re.compile(r"\b(?:ever|previously|in the past|if (?:so|yes|applicable)|optional|not required|preferred|a plus|bonus|"
+                      r"nice to have|or equivalent|equivalent (?:experience|combination)|or (?:relevant )?experience|in lieu|"
+                      r"any (?:type|kind|form|level) of)\b", re.I)
+FORM_DEGREE = re.compile(r"\b(?:bachelor'?s?|undergraduate degree|college degree|university degree|four[- ]year degree|"
+                         r"4[- ]year degree|master'?s degree|associate'?s? degree|an? (?:college |university |\w+ )?degree\b|degree in\b)", re.I)
+NOT_DEGREE = re.compile(r"\b(?:first|second|third)[- ]degree\b|\brelatives?\b|enrolled|currently (?:pursuing|attending|a student)|"
+                        r"\bstudent\b|graduat\w+ (?:in|by|between)|high school|\bged\b|diploma", re.I)
+FORM_LICENCE = re.compile(r"driver[’']?s?[’']? licen[cs]e|driving licen[cs]e|reliable (?:personal )?(?:transportation|vehicle)|"
+                          r"own (?:a |reliable )?(?:car|vehicle)|insurable driving|\bcdl\b|able to drive", re.I)
+FORM_WEEKEND = re.compile(r"\b(?:available|availability|able|willing) to work (?:on )?(?:(?:some |the )?weekends?|saturdays?|sundays?|"
+                          r"evenings?(?:,)? (?:and|&|or) weekends?|nights?(?:,)? (?:and|&|or) weekends?)|\bweekend (?:shifts?|availability|"
+                          r"work|coverage|rotation)\b", re.I)
+FORM_WEEKEND_SOFT = re.compile(r"\b(?:occasional(?:ly)?|as needed|if needed|on occasion|rarely|sometimes|from time to time)\b", re.I)
 
-    Only for jobs that read as remote: a form asking a remote applicant to live near an office elsewhere, to work
-    on-site, or to live in a list of states without the home state. Not a gate: a question naming the home state
-    or a local/nearby place (in its label, options or description), soft ones (optional, occasional or periodic
-    visits, training, the country), and one with a "None"/"Other" answer. A list that may be cut off (12 options,
-    a 300-character description) without the home state in view is only a flag."""
-    if lc not in REMOTE_CLASSES + ("unknown",):
-        return []
+
+def _cut(q, opts, qdesc):
+    """A question's list may have been cut off by its adapter (Lever/Greenhouse keep 12 options and 300 characters)."""
+    if "truncated" in q:
+        return bool(q["truncated"])
+    return len(opts) >= 12 or len(qdesc) >= QUESTION_CUT
+
+
+def form_gates(job, prof, lc):
+    """The application form's own questions -> [(effect, why)]: effect skip (a required question), flag, or
+    "rule:<name>" (the profile's rule decides: clearance, degree_required, drivers_licence, weekend_required).
+
+    For jobs that read as remote, the location questions: a form asking a remote applicant to live near an office
+    elsewhere, to work on-site, or to live in a list of states without the home state. Not a gate: a question naming
+    the home state or a local/nearby place (in its label, options or description), soft ones (optional, occasional
+    or periodic visits, training, the country), and one with a "None"/"Other" answer. A list that may be cut off
+    (12 options, a 300-character description) without the home state in view is only a flag.
+
+    For every job, required yes/no questions that rule someone out: work authorization only for another country
+    ("Are you legally authorized to work in Canada?", with no US answer and no US question), a security clearance,
+    a degree (unless the question or the posting takes equivalent experience), a driver's licence or car, weekend
+    availability. Questions about the past ("have you ever held a clearance") or marked optional don't count."""
     tag = _state_tag(prof)
 
     def names_home(s):
@@ -612,18 +652,57 @@ def form_gates(job, prof, lc):
                     or (tag is not None and tag.search(s)))
 
     out = []
-    for q in questions_of(job):
+    qs = questions_of(job)
+    us_auth = any(AUTH.search(q["label"] + " " + str(q.get("description") or "")) and
+                  FORM_US.search(" ".join([q["label"], str(q.get("description") or "")] + [str(o) for o in q.get("options") or []]))
+                  for q in qs)
+    deg_desc = None
+    for q in qs:
         label = " ".join(q["label"].split())
         opts = [str(o) for o in (q.get("options") or [])]
         qdesc = " ".join(str(q.get("description") or "").split())
         req = bool(q.get("required", True))
         short = label if len(label) <= 140 else label[:137] + "..."
+        yes_no = q.get("type") in ("boolean", "knockout") or bool(opts and all(YES_NO.match(o) for o in opts)) or \
+            (not opts and q.get("type") in (None, "", "input_text"))
+        asks = req and yes_no and ASKS.search(label) and not SOFT_ASK.search(label)
+        if asks:
+            whole = label + " " + qdesc
+            place = NON_US.search(label)
+            if AUTH.search(whole) and place and not FORM_US.search(" | ".join([whole] + opts)) and not AUTH_SOFT.search(label):
+                out.append(("flag" if us_auth else "skip", "the application form asks for work authorization in %s ('%s')"
+                            % (place.group(0).title() if place.group(0).islower() else place.group(0), short)))
+                continue
+            if CLEARANCE.search(label):
+                out.append(("rule:clearance", "the application form asks for a security clearance ('%s')" % short))
+                continue
+            if FORM_DEGREE.search(label) and not EQUIV.search(whole) and not NOT_DEGREE.search(label):
+                if deg_desc is None:
+                    deg_desc = degree_of(job.get("description") or "")[0]
+                if deg_desc in ("equivalent_ok", "preferred"):
+                    out.append(("flag", "the application form asks about a degree; the posting takes %s ('%s')" % (
+                        "equivalent experience" if deg_desc == "equivalent_ok" else "it as preferred", short)))
+                else:
+                    out.append(("rule:degree_required", "the application form asks for a degree ('%s')" % short))
+                continue
+            if FORM_LICENCE.search(label):
+                out.append(("rule:drivers_licence", "the application form asks for a driver's licence or car ('%s')" % short))
+                continue
+            if FORM_WEEKEND.search(label) and not FORM_WEEKEND_SOFT.search(label):
+                out.append(("rule:weekend_required", "the application form asks for weekend availability ('%s')" % short))
+                continue
+        if lc not in REMOTE_CLASSES + ("unknown",):
+            continue
         kind, sts, _ = state_restriction(label + "\n" + qdesc, prof.home_state)
         if kind == "includes_home":
             continue
         if kind in ("excludes_home", "home_excluded_explicit"):
-            cut = len(qdesc) >= QUESTION_CUT and not states_in(label)
-            out.append(("skip" if req and not cut else "flag", "the application form limits it to %s ('%s')" % (
+            cut = ("truncated" not in q or q["truncated"]) and len(qdesc) >= QUESTION_CUT and not states_in(label)
+            # "live in the Pacific Time Zone or Hawaii-Aleutian Time Zone" is time zones, not a state list (OpenTable)
+            zones = kind == "excludes_home" and re.search(r"time ?zones?", label + " " + qdesc, re.I)
+            # "we prefer candidates located in either Nashville, TN or Memphis, TN" (Matter Health) is a preference
+            pref = kind == "excludes_home" and PREFERRED.search(label + " " + qdesc)
+            out.append(("skip" if req and not cut and not zones and not pref else "flag", "the application form limits it to %s ('%s')" % (
                 ", ".join(sts[:8]) + ("..." if len(sts) > 8 else ""), short)))
             continue
         if not FORM_PLACE.search(label) or FORM_SOFT.search(label):
@@ -631,15 +710,62 @@ def form_gates(job, prof, lc):
         if names_home(" | ".join([label, qdesc] + opts)):
             continue
         informational = any(FORM_INFO_OPTION.match(o) for o in opts)
-        cut = FORM_LIST_REF.search(label) and (len(opts) >= 12 or len(qdesc) >= QUESTION_CUT)
+        cut = FORM_LIST_REF.search(label) and _cut(q, opts, qdesc)
         out.append(("skip" if req and not informational and not cut else "flag", "the application form asks: '%s'" % short))
     return out
 
 
+def form_gaps(job, prof):
+    """The profile's required_gaps asked as a required yes/no question on the form ("Are you a CPA?",
+    "Are you fluent in Spanish?") -> [(reason, effect, label)], like required_gaps() for the description."""
+    if not prof.required_gaps:
+        return []
+    out, done = [], set()
+    for q in questions_of(job):
+        label = " ".join(q["label"].split())
+        if not q.get("required", True) or not ASKS.search(label) or SOFT_ASK.search(label) or PREFERRED.search(label):
+            continue
+        for rx, why, effect in prof.required_gaps:
+            if why not in done and rx.search(label):
+                done.add(why)
+                out.append((why + " (application form)", effect, label[:160]))
+    return out
+
+
+# form questions that say nothing about the job: where you heard of it (its options name LinkedIn, Discord,
+# YouTube...), the voluntary EEO survey, consent boxes, and the built-in contact fields
+FORM_NOISE = re.compile(r"how did you (?:hear|find|learn)|what brought you|where did you (?:hear|find|see|learn)|\bsource\b|refer(?:red|ral)|"
+                        r"gender|\brace\b|ethnic|veteran|disabilit|transgender|sexual orientation|pronoun|hispanic|latin[ox]|"
+                        r"\bconsent|privacy|\bagree\b|acknowledge|^(?:first |last |full |legal |preferred )?name$|^e-?mail|^phone|"
+                        r"linkedin|github|twitter|portfolio|website|^resume|^cv$|cover letter|^address|^city|^location$", re.I)
+FORM_NOISE_SECTION = re.compile(r"demographic|voluntary|self[- ]identif|eeo|equal (?:employment|opportunity)|diversity", re.I)
+
+
+def form_text(job):
+    """The employer's own questions on the application form as text (labels, descriptions, options), for the
+    keyword match: "Do you have experience with Docker and Linux?" says as much about the job as its posting."""
+    out = []
+    for q in questions_of(job):
+        label = " ".join(q["label"].split())
+        if FORM_NOISE.search(label) or FORM_NOISE_SECTION.search(str(q.get("section") or "")):
+            continue
+        out.append(" ".join([label, str(q.get("description") or "")] + [str(o) for o in q.get("options") or []]))
+    return "\n".join(out)
+
+
+# a form question that asks for the applicant's own number, with a sample figure ("desired salary? (i.e. $50000)")
+PAY_ASKED = re.compile(r"\b(?:desired|expect\w*|your (?:current|minimum|target|ideal|desired)|current (?:salary|pay|compensation|rate)|"
+                       r"i\.e\.|e\.g\.|for example|format)", re.I)
+PAY_STATED = re.compile(r"\b(?:set rate|pays|this (?:role|position|job) (?:is|offers|has)|range for this|does this (?:meet|work)|"
+                        r"are you (?:ok|okay|comfortable|fine) with)\b", re.I)
+
+
 def form_pay_text(job):
-    """Pay stated in the form's required questions ("a set rate of $18 an hour. Does this meet ...?")."""
+    """Pay stated in the form's required questions ("a set rate of $18 an hour. Does this meet ...?"), not the
+    applicant's expectations with a sample figure in them ("desired base salary? (i.e. $50000)")."""
     return "\n".join("%s %s" % (q["label"], " / ".join(q.get("options") or [])) for q in questions_of(job)
-                     if q.get("required", True) and "$" in q["label"] + " ".join(q.get("options") or []))
+                     if q.get("required", True) and "$" in q["label"] + " ".join(q.get("options") or [])
+                     and (PAY_STATED.search(q["label"]) or not PAY_ASKED.search(q["label"])))
 
 
 def _date(s):
@@ -759,7 +885,10 @@ def assess(job, prof=None, company=""):
             else:
                 flags.append("remote, but tagged only to %s: may have to live near one" % loc_s[:60])
     for effect, why in form_gates(job, prof, lc):
-        (skip if effect == "skip" else flags).append(why)
+        if effect.startswith("rule:"):
+            rule(effect[5:], why)
+        else:
+            (skip if effect == "skip" else flags).append(why)
     if lc == "home_state_remote":
         reasons.append("%s-residents-only remote: small applicant pool" % home_name)
     elif lc == "local":
@@ -836,7 +965,9 @@ def assess(job, prof=None, company=""):
     certs = sorted({m.group(1) for ln in lines_of(desc) if not PREFERRED.search(ln) and re.search(r"requir|must", ln, re.I)
                     for m in CERT_REQ.finditer(ln)})
     gap_long = []
-    for why, effect, _ in required_gaps(desc, prof):
+    gaps = required_gaps(desc, prof)
+    gaps += [g for g in form_gaps(job, prof) if g[0].replace(" (application form)", "") not in {w for w, _, _ in gaps}]
+    for why, effect, _ in gaps:
         (skip if effect == "skip" else flags if effect == "flag" else gap_long).append(why)
 
     # ---- freshness: a posting up for a year is not a fresh match
@@ -915,7 +1046,8 @@ def assess(job, prof=None, company=""):
         reasons.append("health insurance stated")
     if facts.get("weekend") == "weekdays":
         score += 2
-    hooks = [h for h in prof.keywords if re.search(r"(?<![A-Za-z0-9])" + re.escape(h) + r"(?![A-Za-z0-9])", desc, re.I)]
+    kw_text = desc + "\n" + form_text(job)      # the employer's own form questions count as part of the posting
+    hooks = [h for h in prof.keywords if re.search(r"(?<![A-Za-z0-9])" + re.escape(h) + r"(?![A-Za-z0-9])", kw_text, re.I)]
     hooks = list(dict.fromkeys(h.lower() for h in hooks))
     if hooks:
         score += min(10, 2 * len(hooks))

@@ -157,7 +157,7 @@ class CardAndCatchupTest(AlertDBTest):
         self.assertTrue(msg.startswith("**New jobs for Katie** (3)"), msg)
         self.assertIn("✍️ Written answers (1): Why do you want to work at Acme?", msg)
         self.assertIn("✅ Quick apply: no written answers", msg)
-        self.assertIn("❔ Form not read (Ashby)", msg)
+        self.assertIn("❔ Form not read yet (Ashby)", msg)
         self.assertIn("**Payroll Specialist** · Acme · Remote - US · found today", msg)
 
     def test_posted_text(self):

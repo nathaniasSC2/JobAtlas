@@ -11,7 +11,7 @@ import datetime
 import logging
 import threading
 
-from . import config, db, discover, poll, seed
+from . import browser as browser_mod, config, db, discover, poll, seed
 from .net import Client
 
 log = logging.getLogger("jobatlas.watch")
@@ -37,16 +37,23 @@ def run(stop=None, cycles=None):
     w = cfg["watch"]
     stop = stop or threading.Event()
     client = Client(cfg, log=log.info)
+    browser = browser_mod.from_config(cfg.get("forms"), client)
+    if browser is not None:
+        stale = browser.close_stale()
+        log.info("watch: forms browser at %s%s", browser.base, " (closed %d stale tabs)" % stale if stale else "")
     conn = db.connect()
     poll.ensure_columns(conn)
     disc, disc_day, n = None, None, 0
     log.info("watch: started")
     while not stop.is_set():
         if due_count(conn):
-            st = poll.run(conn, client=client, verify_budget=w["verify_budget"], backfill_budget=w["backfill_budget"], quiet=True)
+            st = poll.run(conn, client=client, verify_budget=w["verify_budget"], backfill_budget=w["backfill_budget"], quiet=True,
+                          browser=browser)
             if st["new_jobs"] or st["alerts"].get("sent") or st["alerts"].get("failed"):
                 log.info("watch: %d boards, %d new jobs, %d new matches, alerts %s",
                          st["boards"], st["new_jobs"], st["new_matches"], st["alerts"])
+            if st.get("forms"):
+                log.info("watch: forms %s", st["forms"])
         today = datetime.datetime.now().astimezone()
         if w.get("discover_hour") is not None and today.hour == int(w["discover_hour"]) and disc_day != today.date() \
                 and not (disc and disc.is_alive()):

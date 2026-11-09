@@ -12,6 +12,7 @@ human site paths (/External/...) but not /wday/cxs/.
 """
 import json
 import os
+import re
 
 from .. import profile
 from .base import Result, html_text, iso_date, new_job, relative_date
@@ -108,3 +109,88 @@ def detail(client, token, job):
     if info.get("canApply") is False:
         out["_closed"] = True
     return out
+
+
+# The application questions (questionnaireId in the detail) are only served to a signed-in candidate:
+# Workday's apply flow starts with Create Account/Sign In on most tenants, and on the tenants that take
+# guests the questions come after "My Information", i.e. only once an application has been started.
+# JobAtlas does neither. form() loads the public apply page in the browser, reads which wall it shows and
+# the flow's steps, and stores that; the tenant's answer is reused for its other jobs (poll.read_forms).
+FORM_PER_BOARD = True
+FORM_BROWSER = True
+FORM_SCRIPT = r'''(async () => {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const txt = e => (e ? (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim() : '');
+  const main = () => document.querySelector('main') || document.body;
+  for (let i = 0; i < 48; i++) {
+    const t = txt(main());
+    if (/doesn.t exist|no longer|not available/i.test(t) || (/step \d+ of \d+/i.test(t) && document.querySelector('main input'))) break;
+    await sleep(250);
+  }
+  await sleep(400);
+  const fields = Array.from(document.querySelectorAll('main [data-automation-id^="formField"], main [data-automation-id="multiSelectContainer"]'))
+    .filter(f => !f.parentElement.closest('[data-automation-id^="formField"]')).map(f => {
+      const l = (txt(f.querySelector('label, legend')) || txt(f)).slice(0, 200);
+      return {label: l.replace(/\s*\*.*$/, ''), required: /\*/.test(l) || !!f.querySelector('[aria-required="true"], [required]'),
+              id: f.getAttribute('data-automation-id') || ''};
+    }).filter(f => f.label).slice(0, 60);
+  return {url: location.href, title: document.title, text: txt(main()).slice(0, 1500),
+          headings: Array.from(document.querySelectorAll('main h1, main h2, main h3')).map(txt).filter(Boolean).slice(0, 8),
+          password: !!document.querySelector('main input[type=password]'),
+          buttons: Array.from(document.querySelectorAll('main button')).map(txt).filter(Boolean).slice(0, 12), fields};
+})()'''
+GONE = re.compile(r"doesn.t exist|no longer (?:available|accepting|open)|job (?:posting )?is not available|position has been filled", re.I)
+STEP_NAMES = ("Create Account/Sign In", "My Information", "My Experience", "Application Questions", "Voluntary Disclosures",
+              "Self Identify", "Take Assessment", "Review")
+
+
+def steps_of(text):
+    """'current step 1 of 6 Create Account/Sign In step 2 of 6 My Information ...' -> step names."""
+    out = []
+    for m in re.finditer(r"step (\d+) of (\d+)\s+", text or "", re.I):
+        rest = text[m.end():]
+        nxt = re.search(r"\s+(?:current )?step \d+ of \d+", rest, re.I)
+        name = rest[:nxt.start()] if nxt else rest
+        known = next((s for s in STEP_NAMES if name.lower().startswith(s.lower())), None)
+        out.append(known or name[:40].strip())
+    return out
+
+
+def wall_of(page):
+    """FORM_SCRIPT's result -> (state, form). state: signin (an account first), guest (questions after the
+    first steps), gone (the posting no longer exists), or '' (couldn't tell)."""
+    text = page.get("text") or ""
+    steps = steps_of(text)
+    form = {"steps": steps, "headings": page.get("headings") or [], "fields": page.get("fields") or [], "url": page.get("url") or ""}
+    if GONE.search(text) and not steps:
+        return "gone", form
+    if page.get("password") or any(re.search(r"create account|sign in", s, re.I) for s in steps[:1]) or \
+            any(re.match(r"create account|sign in", h, re.I) for h in page.get("headings") or []):
+        return "signin", form
+    if steps:
+        return "guest", form
+    return "", form
+
+
+def form(client, token, job, browser=None):
+    """-> {"state": "signin"|"guest", "form": {...}, "questions": [...]} (the questions themselves can't be read:
+    see above), {"_closed": True} or {"_detail_error": ...}."""
+    if browser is None:
+        return {"_detail_error": "no browser configured", "_no_browser": True}
+    url = (job.get("url") or "").split("?")[0].rstrip("/")
+    if not url:
+        return {"_detail_error": "no posting url"}
+    from ..browser import BrowserError
+    try:
+        page = browser.read(url + "/apply/applyManually", FORM_SCRIPT)
+    except BrowserError as e:
+        return {"_detail_error": str(e)[:160]}
+    if not isinstance(page, dict):
+        return {"_detail_error": "unexpected result: %s" % str(page)[:80]}
+    state, f = wall_of(page)
+    if state == "gone":
+        return {"_closed": True}
+    if not state:
+        return {"_detail_error": "couldn't tell the apply page's first step: %s" % (page.get("text") or "")[:80]}
+    f["questionnaire"] = bool(((job.get("raw") or {}).get("_detail") or {}).get("questionnaireId"))
+    return {"state": state, "form": f}
