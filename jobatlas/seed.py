@@ -8,9 +8,13 @@
                 export, a saved search); boards in the URLs are added, names are queued
   --seedmap M   {company: {ats: {slug, jobs_today}}} from a research probe
 
+  aggregators   opt-in (watch.seed_sources / --sources): the Hitmarker and Work With Indies boards,
+                read from their public sitemap / RSS plus job pages (adapters/aggregators.py), for a
+                personal search only. Poll them at most twice a day (poll.ats_interval_hours).
+
 Sources whose terms forbid scraping are not used: YC's directory and Work at a
 Startup (YC's terms ban "data mining, robots, scraping or similar data gathering";
-WaaS needs a login), and job aggregators whose terms ban harvesting.
+WaaS needs a login).
 """
 import io
 import json
@@ -138,6 +142,11 @@ def run(conn, client, sources=("remoteintech", "employers"), files=(), seedmaps=
         conn.commit()
     if "employers" in sources:
         from_employers(conn, stats)
+        conn.commit()
+    if "aggregators" in sources:
+        for name, ats, token in (("Hitmarker", "hitmarker", "jobs"), ("Work With Indies", "workwithindies", "careers")):
+            _, created = registry.add_board(conn, name, ats, token, "aggregators")
+            stats["boards_new" if created else "boards_known"] += 1
         conn.commit()
     if files:
         from_files(conn, stats, files)

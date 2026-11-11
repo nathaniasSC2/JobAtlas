@@ -1,7 +1,7 @@
 """jobatlas CLI.
 
   jobatlas init [--force]                                         data dir + example profile and employer list
-  jobatlas seed [--sources remoteintech,employers] [--file F.json ...] [--seedmap M.json ...]
+  jobatlas seed [--sources remoteintech,employers,aggregators] [--file F.json ...] [--seedmap M.json ...]
   jobatlas discover "Company" ["Title"] [--website URL] [--json]   resolve one company to its boards
   jobatlas discover-batch [--budget N] [--workers N]              probe queued candidates
   jobatlas poll [--all] [--limit N] [--ats greenhouse,lever] [--detail-budget N]

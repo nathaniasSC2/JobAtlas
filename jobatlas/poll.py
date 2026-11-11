@@ -89,8 +89,10 @@ def store(conn, board, res, run_started, stats, partial):
             sets = "last_seen=?, closed_at=NULL"
             args = [now]
             # Workday lists say "3 Locations"; the detail call stored the real list, so keep it
-            if row["title"] != j["title"] or (j.get("location") and row["location"] != j.get("location")
-                                              and not MANY_LOCATIONS.match(j["location"])):
+            # provisional titles/locations (aggregator feeds) are replaced by the job page's own on detail; keep those
+            if not (j.get("provisional") and row["detail_state"] == "fetched") and (
+                    row["title"] != j["title"] or (j.get("location") and row["location"] != j.get("location")
+                                                   and not MANY_LOCATIONS.match(j["location"]))):
                 sets += ", title=?, location=?"
                 args += [j["title"], j.get("location") or row["location"]]
             if j.get("description") and not j.get("needs_detail"):
@@ -213,13 +215,14 @@ def fetch_details(conn, client, todo, budget, workers, fetched=None):
             if d.get("raw_detail"):
                 raw["_detail"] = d["raw_detail"]
             closed = _iso(_utcnow()) if d.get("_closed") else None
-            conn.execute("UPDATE jobs SET description=COALESCE(NULLIF(?,''), description), questions=?, pay_text=COALESCE(NULLIF(?,''), pay_text),"
+            conn.execute("UPDATE jobs SET title=COALESCE(NULLIF(?,''), title), company=COALESCE(NULLIF(?,''), company),"
+                         " description=COALESCE(NULLIF(?,''), description), questions=?, pay_text=COALESCE(NULLIF(?,''), pay_text),"
                          " location=COALESCE(NULLIF(?,''), location), workplace=COALESCE(NULLIF(?,''), workplace),"
                          " employment_type=COALESCE(NULLIF(?,''), employment_type), posted_at=COALESCE(NULLIF(posted_at,''), ?),"
                          " department=COALESCE(NULLIF(?,''), department), url=COALESCE(NULLIF(?,''), url),"
                          " apply_url=COALESCE(NULLIF(?,''), apply_url), raw=?, detail_state='fetched', closed_at=COALESCE(?, closed_at)"
                          " WHERE id=?",
-                         (d.get("description") or "", db.jdump(d.get("questions") or db.jload(r["questions"], [])), d.get("pay_text") or "",
+                         (d.get("title") or "", d.get("company") or "", d.get("description") or "", db.jdump(d.get("questions") or db.jload(r["questions"], [])), d.get("pay_text") or "",
                           d.get("location") or "", d.get("workplace") or "", d.get("employment_type") or "", d.get("posted_at") or "",
                           d.get("department") or "", d.get("url") or "", d.get("apply_url") or "", db.jdump(raw), closed, jid))
             n += 1
@@ -232,7 +235,8 @@ def fetch_details(conn, client, todo, budget, workers, fetched=None):
     return n
 
 
-DETAIL_ATS = ("greenhouse", "rippling", "workday", "bamboohr", "breezy", "smartrecruiters", "paylocity", "adp", "oracle")
+DETAIL_ATS = ("greenhouse", "rippling", "workday", "bamboohr", "breezy", "smartrecruiters", "paylocity", "adp", "oracle",
+              "hitmarker", "workwithindies")
 GONE = re.compile(r"(job not found|no longer (?:available|accepting|open)|position has been filled|posting (?:has )?(?:closed|expired)|"
                   r"this job (?:is )?(?:closed|no longer)|page not found|404 not found)", re.I)
 
